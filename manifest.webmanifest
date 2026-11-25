@@ -1,0 +1,24 @@
+{
+  "name": "Xưởng Đấu Dây",
+  "short_name": "Đấu Dây",
+  "description": "Mô phỏng đấu dây điện công nghiệp, dân dụng và sơ đồ nguyên lý",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0f3290",
+  "lang": "vi",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
