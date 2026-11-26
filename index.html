@@ -348,6 +348,11 @@ svg text{font-family:"Be Vietnam Pro",system-ui,sans-serif}
 .vnum{display:flex;align-items:center;gap:4px}.vnum input{width:100px}.vnum i{font-style:normal;color:var(--mut);font-size:12px}
 .vin{display:inline-block;border:1px solid var(--line);border-radius:5px;padding:0 5px;margin:0 2px;font-size:12px}.vin.on{background:var(--ok);color:#fff;border-color:var(--ok)}
 .lcd.err{fill:#ff6d5e}
+.mcup{display:flex;flex-direction:column;gap:8px}.mcucode{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13.5px;line-height:1.5;width:100%;min-height:300px;padding:10px;border:1px solid var(--line);border-radius:10px;background:#0f1720;color:#e6edf3;tab-size:2;white-space:pre;resize:vertical}
+.mcuser{background:#0f1720;color:#9fe6b0;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;min-height:120px;max-height:240px;overflow:auto;border-radius:10px;padding:10px;margin:0;white-space:pre-wrap}
+.mcuh{display:flex;justify-content:space-between;align-items:baseline}.mcupins{display:flex;flex-wrap:wrap;gap:4px}.mcupins span{font:600 12px ui-monospace,Menlo,monospace;border:1px solid var(--line);border-radius:5px;padding:2px 5px;color:var(--mut)}
+.mcupins span.o{border-color:var(--co)}.mcupins span.on{background:var(--ok);color:#fff;border-color:var(--ok)}.mcuhelp{font-size:13px;line-height:1.6;color:var(--mut)}
+.lcdtxt{font:700 17px ui-monospace,Menlo,Consolas,monospace;fill:#0b2530;letter-spacing:1.2px}
 .rb-box{fill:#c98a3e;stroke:#7a4d17;stroke-width:1.5}
 @media (max-width:760px){.vfdtop{grid-template-columns:1fr}.vscr b{font-size:40px}.vk{min-height:54px;font-size:16px}}
 /* ===== cẩm nang PLC ===== */
@@ -831,19 +836,23 @@ SCH('Động cơ 3 pha 6 đầu', 'Động cơ 6 đầu', 'M', {
 const PH = { L1: 0, L2: 1, L3: 2, G1: 0, G2: 1, G3: 2 };
 const isAC = p => p === 'N' || p in PH;
 const normPh = x => x ? x.replace('G', 'L') : x;
+const LV = { V5: 5, V33: 3.3, V9: 9, V12: 12, G: 0 };
 function voltage(a, b) {
   if (!a || !b) return null;
-  if (a === b) return { v: 0, t: /^[DA]/.test(a) ? 'DC' : 'AC' };
+  if (a === b) return { v: 0, t: /^[DAVG]/.test(a) ? 'DC' : 'AC' };
   if (isAC(a) && isAC(b)) return { v: (a === 'N' || b === 'N') ? 230 : 400, t: 'AC' };
   if ((a === 'D+' && b === 'D0') || (a === 'D0' && b === 'D+')) return { v: 24, t: 'DC' };
   if ((a === 'X1' && b === 'X0') || (a === 'X0' && b === 'X1')) return { v: 230, t: 'AC' };
   if ((a === 'A10' && b === 'A0') || (a === 'A0' && b === 'A10')) return { v: 10, t: 'DC' };
+  if (a in LV && b in LV) return { v: Math.round(Math.abs(LV[a] - LV[b]) * 10) / 10, t: 'DC', s: Math.sign(LV[a] - LV[b]) };
   return { v: NaN, t: 'MIX' };
 }
 function rated(vr, V) { // trả về 'ok' | 'off' | 'over'
   if (!V || !V.v) return 'off';
   if (vr === '400AC') return V.t === 'AC' && V.v === 400 ? 'ok' : 'off';
   if (vr === '24DC') return V.t === 'DC' && V.v === 24 ? 'ok' : V.t === 'AC' ? 'over' : 'off';
+  if (vr === '5DC') return V.t === 'DC' && V.v >= 3.3 && V.v <= 5.5 ? 'ok' : (V.t === 'AC' || V.v > 6) ? 'over' : 'off';
+  if (vr === '12DC') return V.t === 'DC' && V.v >= 7 && V.v <= 12.5 ? 'ok' : (V.t === 'AC' || V.v > 13) ? 'over' : 'off';
   if (V.t === 'DC') return 'off';
   return V.v === 230 ? 'ok' : V.v === 400 ? 'over' : 'off';
 }
@@ -872,10 +881,21 @@ function solveOnce(proj, S, powered) {
     if (s.length > 1) shorts.push({ n, pots: s }); else netPot[n] = s[0];
   }
   const potOf = key => netPot[find(key)];
+  // điện thế "yếu" qua điện trở / điện trở kéo lên-kéo xuống (mạch điện tử)
+  const weak = {}, wfrom = {}, radj = {};
+  for (const e of els) if (e.k === 'res') { const a = find(e.p.id + ':' + e.a), b = find(e.p.id + ':' + e.b); if (a !== b) { (radj[a] || (radj[a] = [])).push(b); (radj[b] || (radj[b] = [])).push(a); } }
+  if (powered) {
+    const q = [];
+    for (const n in netPot) if (radj[n]) q.push([n, netPot[n], n]);
+    for (const e of els) if (e.k === 'wsrc') { const n = find(e.p.id + ':' + e.t); if (!netPot[n] && weak[n] === undefined) { weak[n] = e.pot; wfrom[n] = n; q.push([n, e.pot, n]); } }
+    for (let i = 0; i < q.length; i++) { const [n, pt, o] = q[i]; for (const m of radj[n] || []) { if (netPot[m]) continue; if (weak[m] === undefined) { weak[m] = pt; wfrom[m] = o; q.push([m, pt, o]); } else if (weak[m] !== pt && wfrom[m] !== o) weak[m] = null; } }
+  }
+  const potW = key => { const n = find(key); if (netPot[n]) return { p: netPot[n], s: 1, n }; if (weak[n]) return { p: weak[n], s: 0, n: wfrom[n] }; return null; };
   const analog = {};
-  for (const e of els) if (e.k === 'aout' && (!e.need || potOf(e.p.id + ':' + e.need) === (e.needPot || 'D+')) && (!e.ret || potOf(e.p.id + ':' + e.ret) === undefined || true)) analog[find(e.p.id + ':' + e.t)] = { v: e.val, u: e.u, kind: e.kind, pid: e.p.id };
+  for (const e of els) if (e.k === 'aout' && (e.rel || e.abs)) { const pv = LV[potOf(e.p.id + ':' + e.need)], pg = potOf(e.p.id + ':' + (e.gnd || e.need)); if (pv > 0 && (!e.gnd || pg === 'G')) analog[find(e.p.id + ':' + e.t)] = { v: e.rel ? e.val * pv : e.val, u: 'V', pid: e.p.id }; }
+  for (const e of els) if (e.k === 'aout' && !e.rel && !e.abs && (!e.need || potOf(e.p.id + ':' + e.need) === (e.needPot || 'D+')) && (!e.ret || potOf(e.p.id + ':' + e.ret) === undefined || true)) analog[find(e.p.id + ':' + e.t)] = { v: e.val, u: e.u, kind: e.kind, pid: e.p.id };
   const anaOf = key => analog[find(key)];
-  return { find, els, netPot, potOf, shorts, pots, analog, anaOf, keys: () => Object.keys(par) };
+  return { find, els, netPot, potOf, potW, shorts, pots, analog, anaOf, keys: () => Object.keys(par) };
 }
 
 const WPOT = { brown: 'L1', black: 'L2', grey: 'L3', blue: 'N', pe: 'N', pen: 'N', redA: 'L1', yellow: 'L2', green: 'L3', blackN: 'N' };
@@ -977,6 +997,18 @@ function simulate(proj, S, now, powered) {
       if (e.part) (out.lamps[id] || (out.lamps[id] = {}))[e.part] = on;
       if (on) { out.loads[id] = true; out.active.add(k(e.a)); out.active.add(k(e.b)); out.watt += e.k === 'coil' ? 8 : (e.w || 0); }
     }
+    if (e.k === 'led' || e.k === 'buz' || e.k === 'motorlv') {
+      const pa = r.potW(id + ':' + e.a), pb = r.potW(id + ':' + e.b), va = pa ? LV[pa.p] : undefined, vb = pb ? LV[pb.p] : undefined;
+      if (va !== undefined && vb !== undefined) {
+        const d = va - vb, sig = S.__sig || {}, pw = n => n && sig[n] && sig[n].pwm != null ? sig[n].pwm : 1;
+        if (e.k === 'led' && d >= 1.8) {
+          if (pa.s && pb.s && !e.noBurn) { e.p.burnt = true; events.push({ k: 'pop', part: id }); faults.push(`${e.p.tag || 'LED'}: LED nối thẳng vào nguồn ${va} V không có điện trở hạn dòng – LED đã CHÁY. Mắc nối tiếp điện trở 220–330 Ω rồi bấm Thay mới.`); }
+          else { out.loads[id] = true; (out.ledb || (out.ledb = {}))[e.part ? id + ':' + e.part : id] = Math.min(pw(pa.n), pw(pb.n)); out.watt += 0.02; }
+        }
+        if (e.k === 'buz' && d >= 3 && pa.s && pb.s) { out.loads[id] = true; out.watt += 0.1; }
+        if (e.k === 'motorlv' && Math.abs(d) >= 3 && pa.s && pb.s) { out.motors[id] = { run: true, dir: Math.sign(d), sp: Math.max(pw(pa.n) < 1 ? pw(pa.n) : 1, 0) * (Math.abs(d) >= 9 ? 1 : 0.6) }; out.loads[id] = true; out.watt += 2; }
+      }
+    }
     if (e.k === 'pwr' && T(S, e.tag).psu) { out.loads[id] = true; out.active.add(k(e.a)); out.active.add(k(e.b)); out.watt += e.w || 5; }
     if (e.k === 'pwr3' && T(S, e.tag).psu) { out.loads[id] = true; e.t.forEach(t => out.active.add(k(t))); }
     if (e.k === 'motordc') {
@@ -1052,9 +1084,9 @@ function simulate(proj, S, now, powered) {
   out.events = events;
   return out;
 }
-const potName = p => ({ X1: 'thứ cấp biến áp', X0: 'thứ cấp biến áp 0', L1: 'L1', L2: 'L2', L3: 'L3', N: 'N/PE', 'D+': '+24V', D0: '0V', G1: 'máy phát L1', G2: 'máy phát L2', G3: 'máy phát L3' }[p] || p);
+const potName = p => ({ V5: '+5V', V33: '+3,3V', V9: '+9V', V12: '+12V', G: 'GND', A10: '+10V', A0: '0V analog', X1: 'thứ cấp biến áp', X0: 'thứ cấp biến áp 0', L1: 'L1', L2: 'L2', L3: 'L3', N: 'N/PE', 'D+': '+24V', D0: '0V', G1: 'máy phát L1', G2: 'máy phát L2', G3: 'máy phát L3' }[p] || p);
 
-if (typeof module !== 'undefined') module.exports = { P, T, def, simulate, solveOnce, termsOf, voltage, potName, motorStatus, box, txt, esc, LAMPC, VOPT, COLOPT, sContact, tagLbl, burntMark, motorDraw, btnHead, cbHandle, plate, SCH, tri, ctag };
+if (typeof module !== 'undefined') module.exports = { LV, rated, P, T, def, simulate, solveOnce, termsOf, voltage, potName, motorStatus, box, txt, esc, LAMPC, VOPT, COLOPT, sContact, tagLbl, burntMark, motorDraw, btnHead, cbHandle, plate, SCH, tri, ctag };
 
 /* ===================== PLC: MODEL, NGÔN NGỮ, BIÊN DỊCH, CHUYỂN ĐỔI ===================== */
 /* Biến chuẩn bên trong: I0.0–I0.7, Q0.0–Q0.5, M0–M15, T0–T7, C0–C3, AI0–AI1 (so sánh theo %) */
@@ -2678,18 +2710,18 @@ def('bientro', {
 /* ===================== MÀU DÂY TỰ ĐỘNG THEO TIÊU CHUẨN ===================== */
 const WSTD = {
   iec: { n: 'IEC 60445 + IEC 60204-1 (quốc tế)', d: 'Động lực nâu – đen – xám, trung tính xanh dương nhạt, tiếp địa vàng-xanh lá. Mạch điều khiển máy: AC màu đỏ, DC xanh dương đậm, 0 V xanh sọc trắng.',
-    c: { L1: 'brown', L2: 'black', L3: 'grey', N: 'blue', PE: 'pe', cAC: 'red', cN: 'blue', dcP: 'darkblue', dc0: 'bluewhite', sig: 'darkblue', ana: 'white' } },
+    c: { L1: 'brown', L2: 'black', L3: 'grey', N: 'blue', PE: 'pe', cAC: 'red', cN: 'blue', dcP: 'darkblue', dc0: 'bluewhite', sig: 'darkblue', ana: 'white', vcc: 'red', gnd: 'black' } },
   hoc: { n: 'Dễ phân biệt khi học (IEC, tách màu tín hiệu)', d: 'Giống IEC nhưng dây tín hiệu vào PLC, biến tần màu tím và dây analog màu trắng để dễ dò mạch khi học.',
-    c: { L1: 'brown', L2: 'black', L3: 'grey', N: 'blue', PE: 'pe', cAC: 'red', cN: 'blue', dcP: 'darkblue', dc0: 'bluewhite', sig: 'violet', ana: 'white' } },
+    c: { L1: 'brown', L2: 'black', L3: 'grey', N: 'blue', PE: 'pe', cAC: 'red', cN: 'blue', dcP: 'darkblue', dc0: 'bluewhite', sig: 'violet', ana: 'white', vcc: 'red', gnd: 'black' } },
   vn: { n: 'Kiểu cũ hay gặp ở Việt Nam (đỏ – vàng – xanh lá)', d: 'Tủ điện cũ thường dùng L1 đỏ, L2 vàng, L3 xanh lá, trung tính đen. Xanh lá dễ nhầm với tiếp địa nên công trình mới nên theo IEC.',
-    c: { L1: 'red', L2: 'yellow', L3: 'green', N: 'black', PE: 'pe', cAC: 'red', cN: 'black', dcP: 'darkblue', dc0: 'bluewhite', sig: 'darkblue', ana: 'white' } },
+    c: { L1: 'red', L2: 'yellow', L3: 'green', N: 'black', PE: 'pe', cAC: 'red', cN: 'black', dcP: 'darkblue', dc0: 'bluewhite', sig: 'darkblue', ana: 'white', vcc: 'red', gnd: 'black' } },
   us: { n: 'Mỹ NEC / NFPA 79 (208/120 V)', d: 'Pha đen – đỏ – xanh dương, trung tính trắng, tiếp địa xanh lá hoặc vàng-xanh lá. Điều khiển AC đỏ, DC xanh dương, 0 V DC trắng sọc xanh. Hệ 480 V dùng nâu – cam – vàng.',
-    c: { L1: 'black', L2: 'red', L3: 'blue', N: 'white', PE: 'pe', cAC: 'red', cN: 'white', dcP: 'darkblue', dc0: 'bluewhite', sig: 'darkblue', ana: 'grey' } },
+    c: { L1: 'black', L2: 'red', L3: 'blue', N: 'white', PE: 'pe', cAC: 'red', cN: 'white', dcP: 'darkblue', dc0: 'bluewhite', sig: 'darkblue', ana: 'grey', vcc: 'red', gnd: 'black' } },
   cn: { n: 'Trung Quốc GB (máy nhập từ Trung Quốc)', d: 'Pha vàng – xanh lá – đỏ, trung tính xanh dương nhạt, tiếp địa vàng-xanh lá. Mạch điều khiển theo GB 5226.1 (tương đương IEC 60204-1).',
-    c: { L1: 'yellow', L2: 'green', L3: 'red', N: 'blue', PE: 'pe', cAC: 'red', cN: 'blue', dcP: 'darkblue', dc0: 'bluewhite', sig: 'darkblue', ana: 'white' } },
+    c: { L1: 'yellow', L2: 'green', L3: 'red', N: 'blue', PE: 'pe', cAC: 'red', cN: 'blue', dcP: 'darkblue', dc0: 'bluewhite', sig: 'darkblue', ana: 'white', vcc: 'red', gnd: 'black' } },
   off: { n: 'Tắt – tự chọn màu từng dây', d: 'Dây mới dùng màu đang chọn trong danh sách.', c: {} }
 };
-const WROLE = { L1: 'Pha L1 động lực', L2: 'Pha L2 động lực', L3: 'Pha L3 động lực', N: 'Trung tính N', PE: 'Tiếp địa PE', cAC: 'Điều khiển AC (sau cầu chì, nút, tiếp điểm)', cN: 'Trung tính mạch điều khiển', dcP: 'Nguồn +24 V DC', dc0: '0 V DC', sig: 'Tín hiệu DC vào PLC, biến tần', ana: 'Tín hiệu analog (0–10 V, 4–20 mA)' };
+const WROLE = { L1: 'Pha L1 động lực', L2: 'Pha L2 động lực', L3: 'Pha L3 động lực', N: 'Trung tính N', PE: 'Tiếp địa PE', cAC: 'Điều khiển AC (sau cầu chì, nút, tiếp điểm)', cN: 'Trung tính mạch điều khiển', dcP: 'Nguồn +24 V DC', dc0: '0 V DC', sig: 'Tín hiệu DC vào PLC, biến tần', ana: 'Tín hiệu analog (0–10 V, 4–20 mA)', vcc: 'Nguồn dương mạch điện tử (+5 V, +3,3 V, +12 V)', gnd: 'GND (mass) mạch điện tử' };
 const W_NEUTRAL = /^(cd|daioc|daunoi|cdn|thanhN|rail|mcb1|mcb2|cc1|cc2|rccb2|rcbo|nguon1|mayphat1|psu|chu)$/;
 const W_MOTOR = /^(dc3|dc6|dc2t|dcrung|bom3|quathut3|dientro3|dientro3d)$/;
 function wTermKind(p, t) {
@@ -2749,6 +2781,7 @@ function wireRoles(proj) {
     if (!b || b.pots.length !== 1) { if (vfdT.some(t => /^(FWD|REV|X1|X2|COM)$/.test(t))) out[w.id] = 'sig'; continue; }
     const pot = b.pots[0];
     if (pot === 'VC') { out[w.id] = 'sig'; continue; }
+    if (pot in LV) { out[w.id] = pot === 'G' ? 'gnd' : 'vcc'; continue; }
     if (pot === 'D+') { out[w.id] = b.d === 0 ? 'dcP' : 'sig'; continue; }
     if (pot === 'D0') { out[w.id] = 'dc0'; continue; }
     if (pot === 'X1') { out[w.id] = 'cAC'; continue; }
@@ -2823,6 +2856,929 @@ function robotDraw(p, st, v) {
     `<rect x="6" y="262" width="428" height="30" rx="4" class="b-shade"/>` +
     txt(220, 278, st.warn ? st.warn.slice(0, 64) : st.x === undefined ? 'Van Y1 ra X · Y2 hạ Z · Y3 kẹp · cảm biến a0 a1 b0 b1 P' : `Đã gắp ${st.cnt || 0} phôi${st.drop ? ' · rơi ' + st.drop : ''}${st.act ? ' · ĐÃ TẮT CẤP PHÔI' : ''}`, st.warn ? 'pl-r' : 'pl-s') + tagLbl(p, 444, 150);
 }
+
+/* ===================== VI ĐIỀU KHIỂN: trình thông dịch C rút gọn ===================== */
+/* Hỗ trợ một tập con của C dùng trong Arduino, Keil C 8051, CCS C / XC8 (PIC), STM32 HAL. */
+const MC_TYPES = new Set(['void', 'int', 'long', 'short', 'float', 'double', 'char', 'bool', 'boolean', 'byte', 'word', 'unsigned', 'signed', 'const', 'volatile', 'static', 'uint8_t', 'uint16_t', 'uint32_t', 'int8_t', 'int16_t', 'int32_t', 'bit', 'int1', 'int8', 'int16', 'int32', 'String', 'size_t', 'register', 'code', 'data', 'idata', 'xdata']);
+const MC_CLASSES = new Set(['Servo', 'LiquidCrystal_I2C', 'DHT', 'GPIO_InitTypeDef', 'NewPing']);
+const MC_KW = new Set(['if', 'else', 'while', 'for', 'do', 'return', 'break', 'continue', 'switch', 'case', 'default', 'sizeof', 'sbit', 'sfr', 'true', 'false']);
+function mcLex(src) {
+  const toks = [], defs = {}; let i = 0, line = 1;
+  const lines = src.replace(/\r/g, '').split('\n');
+  // tiền xử lý: #define đơn giản, bỏ qua #include, #fuses, #use, #pragma
+  const body = lines.map((l, n) => { const m = l.match(/^\s*#\s*(\w+)\s*(.*)$/); if (!m) return l;
+    if (m[1] === 'define') { const d = m[2].match(/^(\w+)(\([^)]*\))?\s*(.*)$/); if (d && !d[2]) defs[d[1]] = d[3].replace(/\/\/.*$/, '').trim(); else if (d && d[2]) throw { msg: 'Dòng ' + (n + 1) + ': chưa hỗ trợ #define có tham số (macro hàm).' }; }
+    return ''; }).join('\n');
+  const s = body;
+  const push = (t, v) => toks.push({ t, v, line });
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '\n') { line++; i++; continue; }
+    if (/\s/.test(c)) { i++; continue; }
+    if (s.startsWith('//', i)) { while (i < s.length && s[i] !== '\n') i++; continue; }
+    if (s.startsWith('/*', i)) { const j = s.indexOf('*/', i + 2); const seg = s.slice(i, j < 0 ? s.length : j); line += (seg.match(/\n/g) || []).length; i = j < 0 ? s.length : j + 2; continue; }
+    if (/[0-9]/.test(c) || (c === '.' && /[0-9]/.test(s[i + 1]))) {
+      const m = s.slice(i).match(/^(0[xX][0-9a-fA-F]+|0[bB][01]+|[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)([uUlLfF]*)/);
+      const raw = m[1]; let v = /^0[xX]/.test(raw) ? parseInt(raw, 16) : /^0[bB]/.test(raw) ? parseInt(raw.slice(2), 2) : parseFloat(raw);
+      push('num', v); if (/[.eE]/.test(raw) || /[fF]/.test(m[2])) toks[toks.length - 1].f = 1; i += m[0].length; continue; }
+    if (/[A-Za-z_]/.test(c)) { const m = s.slice(i).match(/^[A-Za-z_]\w*/)[0]; i += m.length;
+      if (defs[m] !== undefined && defs[m] !== '') { const sub = mcLex(defs[m]).toks.filter(x => x.t !== 'eof'); sub.forEach(x => { x.line = line; toks.push(x); }); continue; }
+      if (defs[m] === '') continue;
+      push(MC_KW.has(m) ? 'kw' : 'id', m); continue; }
+    if (c === '"') { let j = i + 1, v = ''; while (j < s.length && s[j] !== '"') { if (s[j] === '\\') { const n = s[j + 1]; v += n === 'n' ? '\n' : n === 't' ? '\t' : n; j += 2; } else v += s[j++]; } push('str', v); i = j + 1; continue; }
+    if (c === "'") { let v = s[i + 1], j = i + 2; if (v === '\\') { const n = s[i + 2]; v = n === 'n' ? '\n' : n === '0' ? '\0' : n; j = i + 3; } push('num', v.charCodeAt(0)); i = j + 1; continue; }
+    const ops = ['<<=', '>>=', '...', '++', '--', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '==', '!=', '<=', '>=', '&&', '||', '<<', '>>', '->', '::'];
+    const op = ops.find(o => s.startsWith(o, i)) || c; push('op', op); i += op.length;
+  }
+  push('eof', ''); return { toks, defs };
+}
+function mcParse(src) {
+  const { toks } = mcLex(src); let k = 0;
+  const pk = (o = 0) => toks[k + o], nx = () => toks[k++];
+  const err = (m, t = pk()) => { throw { msg: 'Dòng ' + t.line + ': ' + m }; };
+  const is = (v, o = 0) => { const t = pk(o); return (t.t === 'op' || t.t === 'kw') && t.v === v; };
+  const eat = v => { if (!is(v)) err(`thiếu "${v}"` + (pk().v ? ` trước "${pk().v}"` : '')); return nx(); };
+  const isType = (o = 0) => { const t = pk(o); return t.t === 'id' && (MC_TYPES.has(t.v) || MC_CLASSES.has(t.v)); };
+  const typeSpec = () => { const ws = []; while (isType()) ws.push(nx().v); while (is('*')) nx(); return ws.join(' '); };
+  // ----- biểu thức -----
+  const BIN = [['||'], ['&&'], ['|'], ['^'], ['&'], ['==', '!='], ['<', '>', '<=', '>='], ['<<', '>>'], ['+', '-'], ['*', '/', '%']];
+  const ASG = new Set(['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=']);
+  function expr() { let e = asg(); while (is(',')) { nx(); e = { k: 'seq', a: e, b: asg() }; } return e; }
+  function asg() { const l = tern(); if (pk().t === 'op' && ASG.has(pk().v)) { const op = nx().v; return { k: 'asg', op, l, r: asg(), line: pk().line }; } return l; }
+  function tern() { const c = bin(0); if (is('?')) { nx(); const a = asg(); eat(':'); return { k: 'tern', c, a, b: asg() }; } return c; }
+  function bin(lv) { if (lv >= BIN.length) return un(); let l = bin(lv + 1); while (pk().t === 'op' && BIN[lv].includes(pk().v)) { const op = nx().v; l = { k: 'bin', op, l, r: bin(lv + 1) }; } return l; }
+  function un() {
+    const t = pk();
+    if (t.t === 'op' && ['!', '~', '-', '+'].includes(t.v)) { nx(); return { k: 'un', op: t.v, a: un() }; }
+    if (t.t === 'op' && (t.v === '++' || t.v === '--')) { nx(); return { k: 'pre', op: t.v, a: un() }; }
+    if (t.t === 'op' && t.v === '&') { nx(); return { k: 'addr', a: un() }; }
+    if (t.t === 'op' && t.v === '*') { nx(); return un(); }
+    if (t.t === 'op' && t.v === '(' && isType(1)) { nx(); const ty = typeSpec(); eat(')'); return { k: 'cast', ty, a: un() }; }
+    if (t.t === 'kw' && t.v === 'sizeof') { nx(); eat('('); let a; if (isType()) { typeSpec(); a = null; } else a = expr(); eat(')'); return { k: 'sizeof', a }; }
+    return post();
+  }
+  function post() {
+    let e = prim();
+    for (;;) {
+      if (is('(')) { nx(); const args = []; if (!is(')')) { args.push(asg()); while (is(',')) { nx(); args.push(asg()); } } eat(')'); e = { k: 'call', f: e, args, line: pk().line }; continue; }
+      if (is('[')) { nx(); const i = expr(); eat(']'); e = { k: 'idx', a: e, i }; continue; }
+      if (is('.') || is('->')) { nx(); const n = nx(); if (n.t !== 'id') err('cần tên thành phần sau dấu chấm'); e = { k: 'mem', a: e, n: n.v }; continue; }
+      if (is('++') || is('--')) { e = { k: 'post', op: nx().v, a: e }; continue; }
+      if (is('::')) { nx(); const n = nx(); e = { k: 'id', n: e.n + '::' + n.v }; continue; }
+      return e;
+    }
+  }
+  function prim() {
+    const t = nx();
+    if (t.t === 'num') return { k: 'num', v: t.v, f: t.f };
+    if (t.t === 'str') { let v = t.v; while (pk().t === 'str') v += nx().v; return { k: 'str', v }; }
+    if (t.t === 'kw' && (t.v === 'true' || t.v === 'false')) return { k: 'num', v: t.v === 'true' ? 1 : 0 };
+    if (t.t === 'id') return { k: 'id', n: t.v, line: t.line };
+    if (t.t === 'op' && t.v === '(') { const e = expr(); eat(')'); return e; }
+    if (t.t === 'op' && t.v === '{') { const items = []; if (!is('}')) { items.push(asg()); while (is(',')) { nx(); if (is('}')) break; items.push(asg()); } } eat('}'); return { k: 'list', items }; }
+    err(`không hiểu "${t.v || 'hết chương trình'}"`, t);
+  }
+  // ----- câu lệnh -----
+  function declList(ty, first) {
+    const ds = []; let name = first;
+    for (;;) {
+      const d = { name, ty };
+      if (is('[')) { nx(); d.arr = is(']') ? null : expr(); eat(']'); if (is('[')) { nx(); d.arr2 = expr(); eat(']'); } d.isArr = 1; }
+      if (is('(') && MC_CLASSES.has(ty.split(' ').pop())) { nx(); d.cargs = []; if (!is(')')) { d.cargs.push(asg()); while (is(',')) { nx(); d.cargs.push(asg()); } } eat(')'); }
+      if (is('=')) { nx(); d.init = asg(); }
+      ds.push(d);
+      if (is(',')) { nx(); while (is('*')) nx(); const n = nx(); if (n.t !== 'id') err('cần tên biến'); name = n.v; continue; }
+      break;
+    }
+    eat(';'); return { k: 'decl', ds, line: pk().line };
+  }
+  function stmt() {
+    const t = pk();
+    if (is('{')) { nx(); const b = []; while (!is('}')) { if (pk().t === 'eof') err('thiếu "}"'); b.push(stmt()); } nx(); return { k: 'blk', b }; }
+    if (is(';')) { nx(); return { k: 'nop' }; }
+    if (t.t === 'kw') {
+      if (t.v === 'if') { nx(); eat('('); const c = expr(); eat(')'); const a = stmt(); let b = null; if (is('else')) { nx(); b = stmt(); } return { k: 'if', c, a, b, line: t.line }; }
+      if (t.v === 'while') { nx(); eat('('); const c = expr(); eat(')'); return { k: 'while', c, b: stmt(), line: t.line }; }
+      if (t.v === 'do') { nx(); const b = stmt(); eat('while'); eat('('); const c = expr(); eat(')'); eat(';'); return { k: 'do', c, b }; }
+      if (t.v === 'for') { nx(); eat('('); let i = null; if (isType()) { const ty = typeSpec(); const n = nx(); i = declList(ty, n.v); } else { if (!is(';')) i = { k: 'ex', e: expr() }; eat(';'); }
+        const c = is(';') ? null : expr(); eat(';'); const s = is(')') ? null : expr(); eat(')'); return { k: 'for', i, c, s, b: stmt(), line: t.line }; }
+      if (t.v === 'return') { nx(); const e = is(';') ? null : expr(); eat(';'); return { k: 'ret', e }; }
+      if (t.v === 'break') { nx(); eat(';'); return { k: 'brk' }; }
+      if (t.v === 'continue') { nx(); eat(';'); return { k: 'cont' }; }
+      if (t.v === 'switch') { nx(); eat('('); const e = expr(); eat(')'); eat('{'); const cs = []; let cur = null;
+        while (!is('}')) { if (is('case')) { nx(); const v = tern(); eat(':'); cur = { v, b: [] }; cs.push(cur); } else if (is('default')) { nx(); eat(':'); cur = { def: 1, b: [] }; cs.push(cur); } else { if (!cur) err('lệnh trong switch phải nằm sau case'); cur.b.push(stmt()); } }
+        nx(); return { k: 'sw', e, cs }; }
+      if (t.v === 'sbit') { nx(); const n = nx().v; eat('='); const e = expr(); eat(';'); return { k: 'sbit', n, e }; }
+      if (t.v === 'sfr') { nx(); while (!is(';')) nx(); nx(); return { k: 'nop' }; }
+    }
+    if (isType()) { const ty = typeSpec(); const n = nx(); if (n.t !== 'id') err('cần tên biến sau kiểu ' + ty); return declList(ty, n.v); }
+    const e = expr(); eat(';'); return { k: 'ex', e, line: t.line };
+  }
+  // ----- toàn chương trình -----
+  const fns = {}, globals = [];
+  while (pk().t !== 'eof') {
+    if (is(';')) { nx(); continue; }
+    if (is('sbit') || is('sfr')) { globals.push(stmt()); continue; }
+    if (pk().t === 'id' && pk().v === 'typedef') err('chưa hỗ trợ typedef');
+    if (isType()) {
+      const ty = typeSpec(); const n = nx(); if (n.t !== 'id') err('cần tên hàm hoặc biến', n);
+      if (is('(') && !MC_CLASSES.has(ty.split(' ').pop())) { nx(); const ps = [];
+        while (!is(')')) { if (is('void') || (pk().t === 'id' && pk().v === 'void' && is(')', 1))) { nx(); continue; } const pty = typeSpec(); const pn = nx(); if (is('[')) { nx(); eat(']'); } ps.push({ n: pn.v, ty: pty }); if (is(',')) nx(); }
+        nx(); if (is(';')) { nx(); continue; } if (!is('{')) err('thiếu thân hàm "{"'); fns[n.v] = { ps, body: stmt(), ty }; continue; }
+      globals.push(declList(ty, n.v)); continue;
+    }
+    err(`không hiểu "${pk().v}" ở ngoài hàm`);
+  }
+  return { fns, globals };
+}
+
+/* ---------- máy thực thi ---------- */
+const MC_BYTE = /\b(char|byte|uint8_t|int8_t|int8|bit|int1|bool|boolean)\b/;
+function mcWrap(ty, v) {
+  if (typeof v !== 'number' || !ty) return v;
+  if (/\b(float|double)\b/.test(ty)) return v;
+  v = Math.trunc(v);
+  if (/\b(bit|int1|bool|boolean)\b/.test(ty)) return v ? 1 : 0;
+  if (/\bunsigned char\b|\bbyte\b|uint8_t|int8\b/.test(ty)) return v & 0xFF;
+  if (/\bchar\b|int8_t/.test(ty)) return ((v & 0xFF) << 24) >> 24;
+  if (/unsigned int|uint16_t|\bword\b|int16\b/.test(ty) && !/long/.test(ty)) return v & 0xFFFF;
+  return v;
+}
+class McuVM {
+  constructor(prog, io) { this.p = prog; this.io = io; this.g = {}; this.gt = {}; this.ops = 0; this.vt = 0; this.limit = 0; this.err = null; this.done = false; this.frames = []; }
+  get(n, line) {
+    for (let i = this.frames.length - 1; i >= 0; i--) { const f = this.frames[i]; if (n in f.v) return f.v[n]; if (f.fn) break; }
+    if (n in this.g) return this.g[n];
+    const r = this.io.get(n); if (r !== undefined) return r;
+    throw { msg: (line ? 'Dòng ' + line + ': ' : '') + 'chưa khai báo "' + n + '"' };
+  }
+  scope(n) { for (let i = this.frames.length - 1; i >= 0; i--) { const f = this.frames[i]; if (n in f.v) return f; if (f.fn) break; } return n in this.g ? { v: this.g, t: this.gt } : null; }
+  set(n, val, line) { const s = this.scope(n); if (s) { s.v[n] = mcWrap(s.t[n], val); return s.v[n]; } if (this.io.set(n, val)) return val; throw { msg: (line ? 'Dòng ' + line + ': ' : '') + 'chưa khai báo "' + n + '"' }; }
+  declare(d, global) {
+    const tgt = global ? { v: this.g, t: this.gt } : this.frames[this.frames.length - 1];
+    let v = 0; const base = d.ty.split(' ').pop();
+    if (MC_CLASSES.has(base)) v = this.io.obj(base, d.name, (d.cargs || []).map(a => this.ev(a)));
+    else if (d.isArr) { const init = d.init && d.init.k === 'list' ? d.init.items.map(x => x.k === 'list' ? x.items.map(y => this.ev(y)) : this.ev(x)) : d.init && d.init.k === 'str' ? [...d.init.v].map(c => c.charCodeAt(0)).concat(0) : [];
+      const n = d.arr ? this.ev(d.arr) : init.length; v = Array.from({ length: n }, (_, i) => init[i] ?? (d.arr2 ? Array(this.ev(d.arr2)).fill(0) : 0)); }
+    else if (d.init) v = this.ev(d.init);
+    tgt.v[d.name] = d.isArr || typeof v === 'object' ? v : mcWrap(d.ty, v); tgt.t[d.name] = d.ty;
+  }
+  nameOf(e) { if (e.k === 'id') return e.n; if (e.k === 'mem') return this.nameOf(e.a) + '.' + e.n; return null; }
+  ref(e) { // trả về { get, set } của vế trái
+    if (e.k === 'id') return { get: () => this.get(e.n, e.line), set: v => this.set(e.n, v, e.line) };
+    if (e.k === 'idx') { const arr = this.ev(e.a), i = this.ev(e.i); if (!Array.isArray(arr)) throw { msg: 'chỉ số mảng dùng cho biến không phải mảng' }; return { get: () => arr[i] ?? 0, set: v => (arr[i] = v) }; }
+    if (e.k === 'mem') { const n = this.nameOf(e); return { get: () => this.get(n), set: v => { if (!this.scope(n) && !this.io.has(n)) this.g[n] = 0; return this.set(n, v); } }; }
+    throw { msg: 'vế trái của phép gán không hợp lệ' };
+  }
+  ev(e) {
+    switch (e.k) {
+      case 'num': return e.v;
+      case 'str': return e.v;
+      case 'id': return this.get(e.n, e.line);
+      case 'list': return e.items.map(x => this.ev(x));
+      case 'seq': this.ev(e.a); return this.ev(e.b);
+      case 'tern': return this.ev(e.c) ? this.ev(e.a) : this.ev(e.b);
+      case 'cast': { const v = this.ev(e.a); return /float|double/.test(e.ty) ? v : mcWrap(e.ty, v); }
+      case 'sizeof': { if (!e.a) return 2; const v = this.ev(e.a); return Array.isArray(v) ? v.length * 2 : typeof v === 'string' ? v.length + 1 : 2; }
+      case 'addr': return { ref: this.nameOf(e.a) };
+      case 'idx': { const a = this.ev(e.a); const i = this.ev(e.i); if (typeof a === 'string') return a.charCodeAt(i) || 0; return Array.isArray(a) ? (a[i] ?? 0) : 0; }
+      case 'mem': { const n = this.nameOf(e); const s = this.scope(n); if (s) return s.v[n]; const r = this.io.get(n); if (r !== undefined) return r; return 0; }
+      case 'un': { const v = this.ev(e.a); return e.op === '!' ? (v ? 0 : 1) : e.op === '~' ? ~v : e.op === '-' ? -v : +v; }
+      case 'pre': case 'post': { const r = this.ref(e.a), o = r.get(), n = r.set(o + (e.op === '++' ? 1 : -1)); return e.k === 'pre' ? n : o; }
+      case 'asg': { const r = this.ref(e.l); if (e.op === '=') return r.set(this.ev(e.r)); const o = r.get(), b = this.ev(e.r); return r.set(this.bop(e.op.slice(0, -1), o, b)); }
+      case 'bin': {
+        if (e.op === '&&') return this.ev(e.l) && this.ev(e.r) ? 1 : 0;
+        if (e.op === '||') return this.ev(e.l) || this.ev(e.r) ? 1 : 0;
+        if (e.op === '/') { const a = this.ev(e.l), b = this.ev(e.r); this._f = this.fl(e.l) || this.fl(e.r); try { return this.bop('/', a, b); } finally { this._f = false; } }
+        return this.bop(e.op, this.ev(e.l), this.ev(e.r)); }
+      case 'call': return this.call(e);
+    }
+    throw { msg: 'biểu thức chưa hỗ trợ' };
+  }
+  tyOf(n) { for (let i = this.frames.length - 1; i >= 0; i--) { const f = this.frames[i]; if (n in f.v) return f.t[n]; if (f.fn) break; } return this.gt[n]; }
+  fl(e) { switch (e.k) { case 'num': return !!e.f; case 'id': return /float|double/.test(this.tyOf(e.n) || ''); case 'cast': return /float|double/.test(e.ty); case 'bin': return !/^(==|!=|<|>|<=|>=|&&|\|\||&|\||\^|<<|>>|%)$/.test(e.op) && (this.fl(e.l) || this.fl(e.r));
+      case 'un': return this.fl(e.a); case 'tern': return this.fl(e.a) || this.fl(e.b); case 'idx': return e.a.k === 'id' && /float|double/.test(this.tyOf(e.a.n) || '');
+      case 'call': { const n = e.f.k === 'id' ? e.f.n : e.f.n; const fn = e.f.k === 'id' && this.p.fns[n]; return fn ? /float|double/.test(fn.ty) : /^(readTemperature|readHumidity|sqrt|pow)$/.test(n); } case 'asg': return this.fl(e.l); }
+    return false; }
+  bop(op, a, b) {
+    if (typeof a === 'string' || typeof b === 'string') { if (op === '+') return String(a) + String(b); if (op === '==') return a == b ? 1 : 0; if (op === '!=') return a != b ? 1 : 0; }
+    switch (op) {
+      case '+': return a + b; case '-': return a - b; case '*': return a * b;
+      case '/': if (b === 0) throw { msg: 'chia cho 0' }; return Number.isInteger(a) && Number.isInteger(b) && !this._f ? Math.trunc(a / b) : a / b;
+      case '%': if (b === 0) throw { msg: 'chia cho 0' }; return a % b;
+      case '<<': return a << b; case '>>': return a >> b; case '&': return a & b; case '|': return a | b; case '^': return a ^ b;
+      case '==': return a == b ? 1 : 0; case '!=': return a != b ? 1 : 0; case '<': return a < b ? 1 : 0; case '>': return a > b ? 1 : 0; case '<=': return a <= b ? 1 : 0; case '>=': return a >= b ? 1 : 0;
+    }
+    throw { msg: 'phép toán ' + op + ' chưa hỗ trợ' };
+  }
+  call(e) {
+    this.ops++; this.vt += this.io.op;
+    let name = null, obj = null;
+    if (e.f.k === 'id') name = e.f.n;
+    else if (e.f.k === 'mem') { obj = this.nameOf(e.f.a); name = e.f.n; }
+    else throw { msg: 'lời gọi hàm không hợp lệ' };
+    const args = e.args.map(a => this.ev(a));
+    if (obj !== null) { let o; try { o = this.get(obj); } catch (x) { o = undefined; } this.io.argF = e.args.map(a => this.fl(a)); return this.io.method(obj, o, name, args, e.line); }
+    const fn = this.p.fns[name];
+    if (fn) { this.sync = (this.sync || 0) + 1; try { const g = this.callFn(fn, args); let r = g.next(); while (!r.done) { if (this.ops > this.cap + 3e6) throw { msg: 'hàm ' + name + ' chạy mãi không thoát (vòng lặp vô hạn?)' }; r = g.next(); } return r.value; } finally { this.sync--; } }
+    const b = this.io.fn(name, args, e.line); return b === undefined ? 0 : b;
+  }
+  *callFn(fn, args) {
+    const f = { v: {}, t: {}, fn: 1 }; fn.ps.forEach((p, i) => { f.v[p.n] = mcWrap(p.ty, args[i] ?? 0); f.t[p.n] = p.ty; });
+    if (this.frames.length > 60) throw { msg: 'gọi hàm lồng nhau quá sâu (đệ quy?)' };
+    this.frames.push(f); try { const r = yield* this.run(fn.body); return r && r.t === 'ret' ? mcWrap(fn.ty, r.v) : 0; } finally { this.frames.pop(); }
+  }
+  *tick() { this.ops++; this.vt += this.io.op; if (this.sync) return; while (this.vt > this.limit || this.ops > this.cap) yield; }
+  *run(s) {
+    switch (s.k) {
+      case 'nop': return;
+      case 'blk': { this.frames.push({ v: {}, t: {} }); try { for (const x of s.b) { const r = yield* this.run(x); if (r) return r; } } finally { this.frames.pop(); } return; }
+      case 'decl': for (const d of s.ds) this.declare(d, false); yield* this.tick(); return;
+      case 'sbit': this.io.sbit(s.n, s.e); return;
+      case 'ex': {
+        const e = s.e;
+        if (e.k === 'call' && e.f.k === 'id' && this.p.fns[e.f.n]) { this.ops++; const r = yield* this.callFn(this.p.fns[e.f.n], e.args.map(a => this.ev(a))); yield* this.tick(); return; }
+        this.ev(e); yield* this.tick(); return; }
+      case 'if': { const c = this.ev(s.c); yield* this.tick(); return c ? yield* this.run(s.a) : s.b ? yield* this.run(s.b) : undefined; }
+      case 'while': for (;;) { if (!this.ev(s.c)) return; yield* this.tick(); const r = yield* this.run(s.b); if (r) { if (r.t === 'brk') return; if (r.t === 'ret') return r; } }
+      case 'do': for (;;) { const r = yield* this.run(s.b); if (r) { if (r.t === 'brk') return; if (r.t === 'ret') return r; } yield* this.tick(); if (!this.ev(s.c)) return; }
+      case 'for': { this.frames.push({ v: {}, t: {} }); try { if (s.i) { if (s.i.k === 'decl') for (const d of s.i.ds) this.declare(d, false); else this.ev(s.i.e); }
+        for (;;) { if (s.c && !this.ev(s.c)) return; yield* this.tick(); const r = yield* this.run(s.b); if (r) { if (r.t === 'brk') return; if (r.t === 'ret') return r; } if (s.s) this.ev(s.s); } } finally { this.frames.pop(); } }
+      case 'sw': { const v = this.ev(s.e); let i = s.cs.findIndex(c => !c.def && this.ev(c.v) === v); if (i < 0) i = s.cs.findIndex(c => c.def); if (i < 0) return;
+        for (; i < s.cs.length; i++) for (const x of s.cs[i].b) { const r = yield* this.run(x); if (r) { if (r.t === 'brk') return; return r; } } return; }
+      case 'ret': return { t: 'ret', v: s.e ? this.ev(s.e) : 0 };
+      case 'brk': return { t: 'brk' };
+      case 'cont': return { t: 'cont' };
+    }
+  }
+  *main(kind) {
+    for (const s of this.p.globals) { if (s.k === 'sbit') this.io.sbit(s.n, s.e); else for (const d of s.ds) this.declare(d, true); }
+    if (kind === 'ard') {
+      if (!this.p.fns.setup || !this.p.fns.loop) throw { msg: 'Chương trình Arduino phải có 2 hàm void setup() và void loop().' };
+      yield* this.callFn(this.p.fns.setup, []);
+      for (;;) { yield* this.callFn(this.p.fns.loop, []); yield* this.tick(); }
+    }
+    if (!this.p.fns.main) throw { msg: 'Chương trình phải có hàm main().' };
+    yield* this.callFn(this.p.fns.main, []); this.done = true;
+  }
+}
+const mcCache = new Map();
+function mcCompile(code) {
+  if (mcCache.has(code)) return mcCache.get(code);
+  let r; try { r = { prog: mcParse(code), err: null }; } catch (e) { r = { prog: null, err: e.msg || String(e) }; }
+  if (mcCache.size > 30) mcCache.clear(); mcCache.set(code, r); return r;
+}
+
+/* ---------- các bo mạch ---------- */
+const rng = (pre, a, b, f = i => pre + i) => Array.from({ length: b - a + 1 }, (_, i) => f(a + i));
+const MCU_MODELS = {
+  uno: { n: 'Arduino Uno R3 (ATmega328P)', short: 'ARDUINO UNO', color: '#00878f', dial: 'ard', vh: 'V5', vref: 5, adc: 1023, op: 0.0005, lang: 'Arduino C/C++ (Arduino IDE)',
+    top: ['GND', 'D13', 'D12', 'D11', 'D10', 'D9', 'D8', 'D7', 'D6', 'D5', 'D4', 'D3', 'D2', 'D1', 'D0'], bot: ['3V3', '5V', 'GND2', 'VIN', 'A0', 'A1', 'A2', 'A3', 'A4', 'A5'],
+    lab: t => ({ D3: '~3', D5: '~5', D6: '~6', D9: '~9', D10: '~10', D11: '~11', D1: 'TX1', D0: 'RX0', GND2: 'GND' })[t] || t.replace(/^D/, ''),
+    pin: n => typeof n === 'number' ? (n <= 13 ? 'D' + n : n <= 19 ? 'A' + (n - 14) : null) : null, ana: t => /^A[0-5]$/.test(t), pwm: [3, 5, 6, 9, 10, 11], sda: 'A4', led: 'D13',
+    consts: { LED_BUILTIN: 13, A0: 14, A1: 15, A2: 16, A3: 17, A4: 18, A5: 19, SDA: 18, SCL: 19 } },
+  esp32: { n: 'ESP32 DevKit V1 (ESP-WROOM-32)', short: 'ESP32', color: '#1f2937', dial: 'ard', vh: 'V33', vref: 3.3, adc: 4095, op: 0.00005, lang: 'Arduino C/C++ (lõi ESP32)',
+    top: ['3V3', 'GND', 'IO15', 'IO2', 'IO4', 'IO16', 'IO17', 'IO5', 'IO18', 'IO19', 'IO21', 'IO22', 'IO23'], bot: ['VIN', 'GND2', 'IO13', 'IO12', 'IO14', 'IO27', 'IO26', 'IO25', 'IO33', 'IO32', 'IO35', 'IO34'],
+    lab: t => ({ IO16: 'RX2', IO17: 'TX2', GND2: 'GND' })[t] || t.replace(/^IO/, 'D'),
+    pin: n => typeof n === 'number' ? 'IO' + n : null, ana: t => /^IO(32|33|34|35|25|26|27|12|13|14|15|2|4)$/.test(t), pwm: 'all', sda: 'IO21', led: 'IO2', inOnly: ['IO34', 'IO35'],
+    consts: { LED_BUILTIN: 2, A4: 32, A5: 33, A6: 34, A7: 35, A10: 4, A12: 2, A13: 15, A14: 13, A15: 12, A16: 14, A17: 27, A18: 25, A19: 26, SDA: 21, SCL: 22 } },
+  c51: { n: '8051 – AT89S52 (bo mạch học tập)', short: 'AT89S52', color: '#7c3aed', dial: 'c51', vh: 'V5', vref: 5, adc: 0, op: 0.008, lang: 'C cho 8051 (Keil C51 / SDCC)',
+    top: [...rng('P1_', 0, 7), 'P3_2', 'P3_3', 'P3_4', 'P3_5'], bot: ['VCC', 'GND', ...rng('P2_', 0, 7)], lab: t => t.replace('_', '.'), pin: () => null, ana: () => false, consts: {} },
+  pic: { n: 'PIC16F877A (bo mạch học tập)', short: 'PIC16F877A', color: '#b91c1c', dial: 'pic', vh: 'V5', vref: 5, adc: 1023, op: 0.0008, lang: 'CCS C (PIC C Compiler) / MPLAB XC8',
+    top: [...rng('RB', 0, 7), ...rng('RD', 0, 7)], bot: ['VDD', 'VSS', ...rng('RA', 0, 5), ...rng('RC', 0, 3)], lab: t => t, pin: () => null, ana: t => /^RA[0-35]$/.test(t), an: ['RA0', 'RA1', 'RA2', 'RA3', 'RA5'], consts: {} },
+  stm32: { n: 'STM32F103C8T6 (Blue Pill)', short: 'STM32 BLUE PILL', color: '#1d4ed8', dial: 'stm', vh: 'V33', vref: 3.3, adc: 4095, op: 0.0001, lang: 'C với thư viện STM32 HAL (STM32CubeIDE)',
+    top: ['3V3', 'GND', ...rng('PA', 0, 7), 'PB0', 'PB1'], bot: ['5V', 'GND2', 'PC13', ...rng('PB', 6, 14)], lab: t => t === 'GND2' ? 'GND' : t, pin: () => null, ana: t => /^(PA[0-7]|PB[01])$/.test(t), sda: 'PB7', led: 'PC13', ledLow: 1, consts: {} }
+};
+const mcuM = p => MCU_MODELS[p.mm] || MCU_MODELS.uno;
+const MCU_SUP = { '5V': 'V5', VIN: 'V5', '3V3': 'V33', VCC: 'V5', VDD: 'V5', GND: 'G', GND2: 'G', VSS: 'G' };
+const mcuW = () => 470;
+
+/* ---------- lớp vào/ra của từng họ vi điều khiển ---------- */
+function mcuIO(p, st, M) {
+  const io = { op: M.op, r: null, objs: {} }, pin = st.pin, vhv = LV[M.vh];
+  const P_ = t => pin[t] || (pin[t] = { m: M.dial === 'c51' ? 'qb' : 'in', v: M.dial === 'c51' ? 1 : 0 });
+  const level = t => { const q = P_(t); if (q.m === 'out') return q.v ? 1 : 0; if (q.m === 'qb' && !q.v) return 0; const w = io.r && io.r.potW(p.id + ':' + t), pull = q.m === 'pu' || q.m === 'qb' ? 1 : q.m === 'pd' ? 0 : null;
+    if (pull !== null && (!w || !w.s)) return pull; return w ? (LV[w.p] ?? (w.p === 'D+' ? 24 : 0)) >= vhv * 0.5 ? 1 : 0 : 0; };
+  const outW = (t, v) => { if (!t) return; const q = P_(t); if (M.inOnly && M.inOnly.includes(t)) throw { msg: t.replace('IO', 'GPIO') + ' của ESP32 chỉ là ngõ vào, không xuất được.' }; if (q.m !== 'qb') q.m = 'out'; q.v = v ? 1 : 0; q.pwm = null; };
+  const anaRead = t => { const a = io.r && io.r.anaOf(p.id + ':' + t); const v = a && a.u === 'V' ? a.v : level(t) ? M.vref : 0; return Math.round(Math.max(0, Math.min(1, v / M.vref)) * M.adc); };
+  const devOf = (t, kind) => { if (!io.r || !t) return null; const n = io.r.find(p.id + ':' + t); return io.r.els.find(e => e.k === 'dev' && e.kind === kind && io.r.find(e.p.id + ':' + e.t) === n) || null; };
+  const ser = s => { st.ser = ((st.ser || '') + s).slice(-3000); };
+  const fmt = (v, f) => typeof v === 'string' ? v : isNaN(v) ? 'nan' : f === 'F' ? v.toFixed(2) : f === 16 ? v.toString(16).toUpperCase() : f === 2 ? v.toString(2) : f === 10 ? String(Math.trunc(v)) : typeof f === 'number' && f < 8 ? v.toFixed(f) : !Number.isInteger(v) ? v.toFixed(2) : String(v);
+  const need = (t, n, line) => { if (!t) throw { msg: (line ? 'Dòng ' + line + ': ' : '') + 'chân ' + n + ' không có trên ' + M.short }; return t; };
+  io.level = level;
+  const common = { delay: ms => { st.vm.vt += +ms || 0; }, abs: Math.abs, min: Math.min, max: Math.max, sqrt: Math.sqrt, pow: Math.pow, floor: Math.floor, ceil: Math.ceil, round: Math.round };
+  let F = {}, C = {}, regGet = () => undefined, regSet = () => false, regHas = () => false;
+  if (M.dial === 'ard') {
+    C = Object.assign({ HIGH: 1, LOW: 0, INPUT: 0, OUTPUT: 1, INPUT_PULLUP: 2, INPUT_PULLDOWN: 3, DHT11: 11, DHT22: 22, DEC: 10, HEX: 16, BIN: 2, CHANGE: 1, RISING: 3, FALLING: 2 }, M.consts);
+    const pt = (n, line) => need(M.pin(n), n, line);
+    F = { pinMode: (n, m) => { const q = P_(pt(n)); q.m = m === 1 ? 'out' : m === 2 ? 'pu' : m === 3 ? 'pd' : 'in'; },
+      digitalWrite: (n, v) => { const t = pt(n), q = P_(t); if (q.m === 'in' || q.m === 'pu') { if (q.m === 'in' && v) q.m = 'pu'; else if (!v && q.m === 'pu') q.m = 'in'; q.v = v ? 1 : 0; return; } outW(t, v); },
+      digitalRead: n => level(pt(n)), analogRead: n => { const t = M.pin(n < 6 && M === MCU_MODELS.uno ? n + 14 : n); if (!t || !M.ana(t)) throw { msg: 'chân ' + n + ' không đọc analog được trên ' + M.short }; return anaRead(t); },
+      analogWrite: (n, v) => { const t = pt(n); if (M.pwm !== 'all' && !M.pwm.includes(n)) throw { msg: 'chân ' + n + ' của Arduino Uno không có PWM (chỉ 3, 5, 6, 9, 10, 11)' }; outW(t, v > 0); P_(t).pwm = Math.max(0, Math.min(255, v)) / 255; },
+      delay: ms => { st.vm.vt += Math.max(0, +ms || 0); }, delayMicroseconds: us => { st.vm.vt += (+us || 0) / 1000; }, millis: () => Math.floor(st.vm.vt - st.t0), micros: () => Math.floor((st.vm.vt - st.t0) * 1000),
+      map: (x, a, b, c, d) => Math.trunc((x - a) * (d - c) / (b - a) + c), constrain: (x, a, b) => Math.max(a, Math.min(b, x)), random: (a, b) => b === undefined ? Math.floor(Math.random() * a) : a + Math.floor(Math.random() * (b - a)), randomSeed: () => 0,
+      tone: (n, f) => { const t = pt(n); outW(t, 1); P_(t).tone = f; }, noTone: n => { const t = pt(n); outW(t, 0); P_(t).tone = 0; },
+      pulseIn: (n) => { const d = devOf(pt(n), 'sr04'); if (!d) return 0; const sp = T(io.S, d.p.tag); if (!sp.psu) return 0; return Math.round(d.get() * 58); },
+      String: (v, f) => fmt(v, f), bitRead: (x, n) => (x >> n) & 1, bit: n => 1 << n, lowByte: x => x & 0xFF, highByte: x => (x >> 8) & 0xFF, isnan: x => isNaN(x) ? 1 : 0 };
+  }
+  if (M.dial === 'c51') {
+    C = { };
+    const ports = { P0: 0xFF, P1: 0xFF, P2: 0xFF, P3: 0xFF }, alias = {};
+    const bitT = (pt, b) => pt === 'P0' ? null : (pt === 'P3' && (b < 2 || b > 5)) ? null : pt + '_' + b;
+    const wr = (pt, v) => { ports[pt] = v & 0xFF; for (let b = 0; b < 8; b++) { const t = bitT(pt, b); if (t) { const q = P_(t); q.v = (v >> b) & 1; } } };
+    const rd = pt => { let v = 0; for (let b = 0; b < 8; b++) { const t = bitT(pt, b); v |= (t ? level(t) : (ports[pt] >> b) & 1) << b; } return v; };
+    io.sbit = (n, e) => { if (e.k === 'bin' && e.op === '^' && e.l.k === 'id' && ports[e.l.n] !== undefined) alias[n] = [e.l.n, st.vm.ev(e.r)]; else throw { msg: 'sbit phải có dạng: sbit TEN = P1^0;' }; };
+    regHas = n => n in ports || n in alias || /^P[0-3]_[0-7]$/.test(n);
+    regGet = n => { if (n in ports) return rd(n); const a = alias[n] || (/^P[0-3]_[0-7]$/.test(n) ? [n.slice(0, 2), +n[3]] : null); if (a) { const t = bitT(a[0], a[1]); return t ? level(t) : (ports[a[0]] >> a[1]) & 1; } };
+    regSet = (n, v) => { if (n in ports) { wr(n, v); return true; } const a = alias[n] || (/^P[0-3]_[0-7]$/.test(n) ? [n.slice(0, 2), +n[3]] : null); if (a) { const b = a[1]; wr(a[0], v ? ports[a[0]] | (1 << b) : ports[a[0]] & ~(1 << b)); return true; } if (/^[A-Z][A-Z0-9_]*$/.test(n)) return true; return false; };
+    F = { _nop_: () => 0, delay_ms: ms => { st.vm.vt += +ms || 0; }, delay: ms => { st.vm.vt += +ms || 0; } };
+  }
+  if (M.dial === 'pic') {
+    const PL = 'ABCDE', tris = { A: 0x3F, B: 0xFF, C: 0xFF, D: 0xFF, E: 0x07 }, lat = { A: 0, B: 0, C: 0, D: 0, E: 0 };
+    C = { TRUE: 1, FALSE: 0, ALL_ANALOG: 0, AN0: 0, AN0_AN1_AN3: 0, ADC_CLOCK_INTERNAL: 0, ADC_CLOCK_DIV_32: 0, _XTAL_FREQ: 20000000 };
+    for (const L of PL) for (let b = 0; b < 8; b++) C['PIN_' + L + b] = PL.indexOf(L) * 8 + b;
+    const term = (L, b) => { const t = 'R' + L + b; return [...M.top, ...M.bot].includes(t) ? t : null; };
+    const sync = L => { for (let b = 0; b < 8; b++) { const t = term(L, b); if (!t) continue; const q = P_(t); q.m = (tris[L] >> b) & 1 ? (L === 'B' && st.rbpu ? 'pu' : 'in') : 'out'; q.v = (lat[L] >> b) & 1; } };
+    const rd = L => { let v = 0; for (let b = 0; b < 8; b++) { const t = term(L, b); v |= (t ? level(t) : (lat[L] >> b) & 1) << b; } return v; };
+    const pinOf = c => [PL[c >> 3], c & 7];
+    const setBit = (o, L, b, v) => { o[L] = v ? o[L] | (1 << b) : o[L] & ~(1 << b); };
+    let adch = 0;
+    F = { output_high: c => { const [L, b] = pinOf(c); setBit(tris, L, b, 0); setBit(lat, L, b, 1); sync(L); }, output_low: c => { const [L, b] = pinOf(c); setBit(tris, L, b, 0); setBit(lat, L, b, 0); sync(L); },
+      output_toggle: c => { const [L, b] = pinOf(c); setBit(tris, L, b, 0); setBit(lat, L, b, !((lat[L] >> b) & 1)); sync(L); }, output_bit: (c, v) => { const [L, b] = pinOf(c); setBit(tris, L, b, 0); setBit(lat, L, b, v); sync(L); },
+      output_float: c => { const [L, b] = pinOf(c); setBit(tris, L, b, 1); sync(L); }, input: c => { const [L, b] = pinOf(c); setBit(tris, L, b, 1); sync(L); return (rd(L) >> b) & 1; },
+      port_b_pullups: v => { st.rbpu = !!v; sync('B'); }, delay_ms: ms => { st.vm.vt += +ms || 0; }, delay_us: us => { st.vm.vt += (+us || 0) / 1000; }, delay_cycles: () => 0,
+      __delay_ms: ms => { st.vm.vt += +ms || 0; }, __delay_us: us => { st.vm.vt += (+us || 0) / 1000; },
+      setup_adc: () => 0, setup_adc_ports: () => 0, set_adc_channel: n => { adch = n; }, read_adc: () => { const t = M.an[adch]; return t ? anaRead(t) : 0; } };
+    for (const L of PL) { const l = L.toLowerCase(); F['output_' + l] = v => { tris[L] = 0; lat[L] = v & 0xFF; sync(L); }; F['input_' + l] = () => { tris[L] = 0xFF; sync(L); return rd(L); }; F['set_tris_' + l] = v => { tris[L] = v & 0xFF; sync(L); }; }
+    const reg = n => { let m;
+      if ((m = n.match(/^TRIS([A-E])$/))) return ['tris', m[1]]; if ((m = n.match(/^(PORT|LAT)([A-E])$/))) return ['port', m[2]];
+      if ((m = n.match(/^(?:PORT|LAT)([A-E])bits\.R[A-E]?([0-7])$/)) || (m = n.match(/^R([A-E])([0-7])$/)) || (m = n.match(/^(?:PORT|LAT)([A-E])bits\.(?:R|LAT)[A-E]([0-7])$/))) return ['pbit', m[1], +m[2]];
+      if ((m = n.match(/^TRIS([A-E])bits\.TRIS[A-E]([0-7])$/))) return ['tbit', m[1], +m[2]]; return null; };
+    regHas = n => !!reg(n);
+    regGet = n => { const r = reg(n); if (!r) return /^[A-Z][A-Z0-9_]*$/.test(n) ? undefined : undefined; if (r[0] === 'tris') return tris[r[1]]; if (r[0] === 'port') return rd(r[1]); if (r[0] === 'pbit') return (rd(r[1]) >> r[2]) & 1; return (tris[r[1]] >> r[2]) & 1; };
+    regSet = (n, v) => { const r = reg(n); if (!r) return /^[A-Z][A-Z0-9_]*$/.test(n);
+      if (r[0] === 'tris') tris[r[1]] = v & 0xFF; else if (r[0] === 'port') lat[r[1]] = v & 0xFF; else if (r[0] === 'pbit') setBit(lat, r[1], r[2], v); else setBit(tris, r[1], r[2], v); sync(r[1]); return true; };
+    io.reset = () => { for (const L of PL) sync(L); };
+  }
+  if (M.dial === 'stm') {
+    C = { GPIOA: 'A', GPIOB: 'B', GPIOC: 'C', GPIO_PIN_SET: 1, GPIO_PIN_RESET: 0, GPIO_MODE_INPUT: 0, GPIO_MODE_OUTPUT_PP: 1, GPIO_MODE_OUTPUT_OD: 1, GPIO_NOPULL: 0, GPIO_PULLUP: 1, GPIO_PULLDOWN: 2, GPIO_SPEED_FREQ_LOW: 0, GPIO_SPEED_FREQ_MEDIUM: 1, GPIO_SPEED_FREQ_HIGH: 2, HAL_OK: 0, GPIO_PIN_All: 0xFFFF };
+    for (let i = 0; i < 16; i++) C['GPIO_PIN_' + i] = 1 << i;
+    const terms = (port, mask) => { const out = []; for (let i = 0; i < 16; i++) if ((mask >> i) & 1) { const t = 'P' + port + i; if ([...M.top, ...M.bot].includes(t)) out.push(t); } return out; };
+    F = { HAL_GPIO_WritePin: (pt, mask, v) => { const ts = terms(pt, mask); if (!ts.length) throw { msg: 'chân GPIO' + pt + ' không có trên bo Blue Pill trong app' }; ts.forEach(t => outW(t, v)); },
+      HAL_GPIO_TogglePin: (pt, mask) => terms(pt, mask).forEach(t => outW(t, !P_(t).v)), HAL_GPIO_ReadPin: (pt, mask) => { const ts = terms(pt, mask); return ts.length ? level(ts[0]) : 0; },
+      HAL_Delay: ms => { st.vm.vt += +ms || 0; }, HAL_GetTick: () => Math.floor(st.vm.vt - st.t0), HAL_Init: () => 0, SystemClock_Config: () => 0, MX_GPIO_Init: () => 0,
+      HAL_GPIO_Init: (pt, ref) => { const n = ref && ref.ref; if (!n) return; const g = k => st.vm.g[n + '.' + k] || 0, mode = g('Mode'), pull = g('Pull');
+        terms(pt, g('Pin')).forEach(t => { const q = P_(t); q.m = mode ? 'out' : pull === 1 ? 'pu' : pull === 2 ? 'pd' : 'in'; }); } };
+  }
+  io.get = n => { if (n in C) return C[n]; const v = regGet(n); return v; };
+  io.has = n => n in C || regHas(n);
+  io.set = (n, v) => regSet(n, v);
+  io.fn = (n, args, line) => { const f = F[n] || common[n]; if (f) return f(...args);
+    if (/^(HAL_|MX_|__HAL_|SystemClock|setup_|enable_|disable_|Error_Handler|SystemInit)/.test(n)) return 0;
+    throw { msg: (line ? 'Dòng ' + line + ': ' : '') + 'hàm "' + n + '" chưa được hỗ trợ cho ' + M.short + ' trong app' }; };
+  io.obj = (cls, name, args) => { const o = { cls, name, args, pin: null, ang: 90 };
+    if (cls === 'LiquidCrystal_I2C') { o.cols = args[1] || 16; o.rows = args[2] || 2; st.lcd = { lines: Array(o.rows).fill(''), cx: 0, cy: 0, bl: 0, cols: o.cols, on: 0 }; }
+    if (cls === 'DHT') o.pin = args[0];
+    io.objs[name] = o; return o; };
+  io.method = (on, o, m, a, line) => {
+    if (on === 'Serial') { if (m === 'begin') { st.baud = a[0]; return; } const fa = (io.argF || [])[0] && typeof a[0] === 'number' && a[1] === undefined ? 'F' : a[1]; if (m === 'print') return ser(fmt(a[0], fa)); if (m === 'println') return ser((a.length ? fmt(a[0], fa) : '') + '\n'); if (m === 'write') return ser(String.fromCharCode(a[0])); if (m === 'available') return 0; if (m === 'read') return -1; if (m === 'flush') return; }
+    if (o && o.cls === 'Servo') { if (m === 'attach') { o.pin = M.pin(a[0]); if (!o.pin) throw { msg: 'chân servo không hợp lệ' }; outW(o.pin, 1); P_(o.pin).servo = o.ang; return 1; }
+      if (m === 'write') { o.ang = Math.max(0, Math.min(180, a[0])); if (o.pin) P_(o.pin).servo = o.ang; return; } if (m === 'writeMicroseconds') { o.ang = Math.max(0, Math.min(180, (a[0] - 544) / (2400 - 544) * 180)); if (o.pin) P_(o.pin).servo = o.ang; return; }
+      if (m === 'read') return o.ang; if (m === 'detach') { if (o.pin) P_(o.pin).servo = null; return; } }
+    if (o && o.cls === 'LiquidCrystal_I2C') { const L = st.lcd;
+      const put = s => { for (const ch of String(s)) { if (L.cy < L.lines.length && L.cx < L.cols) { const ln = L.lines[L.cy].padEnd(L.cols, ' '); L.lines[L.cy] = (ln.slice(0, L.cx) + ch + ln.slice(L.cx + 1)).slice(0, L.cols); } L.cx++; } };
+      if (m === 'init' || m === 'begin') { L.on = 1; return; } if (m === 'backlight') { L.bl = 1; return; } if (m === 'noBacklight') { L.bl = 0; return; }
+      if (m === 'clear') { L.lines = L.lines.map(() => ''); L.cx = L.cy = 0; st.vm.vt += 2; return; } if (m === 'home') { L.cx = L.cy = 0; return; }
+      if (m === 'setCursor') { L.cx = a[0]; L.cy = a[1]; return; } if (m === 'print') return put(fmt(a[0], a[1])); if (m === 'write') return put(String.fromCharCode(a[0])); if (m === 'display' || m === 'noDisplay' || m === 'cursor' || m === 'noCursor' || m === 'blink' || m === 'noBlink') return; }
+    if (o && o.cls === 'DHT') { if (m === 'begin') return; const d = devOf(M.pin(o.pin), 'dht'); if (!d || !T(io.S, d.p.tag).psu) return NaN; const v = d.get(); if (m === 'readTemperature') return v.t; if (m === 'readHumidity') return v.h; }
+    throw { msg: (line ? 'Dòng ' + line + ': ' : '') + `chưa hỗ trợ ${on}.${m}()` };
+  };
+  io.sbit = io.sbit || (() => { throw { msg: 'sbit chỉ dùng cho 8051' }; });
+  return io;
+}
+function mcuPinSig(st) { return Object.entries(st.pin || {}).map(([t, q]) => t + q.m + q.v).join(); }
+function mcuLogic(p, st, S, r, now) {
+  const M = mcuM(p);
+  if (st.lastNow === now) return false; st.lastNow = now;
+  const code = p.code ?? MCU_EX[p.mm || 'uno'][0][1];
+  if (st.code !== code || st.mm !== (p.mm || 'uno')) {
+    st.code = code; st.mm = p.mm || 'uno'; st.pin = {}; st.ser = ''; st.lcd = null; st.err = null; st.halt = false; st.dead = false; st.rbpu = false;
+    const c = mcCompile(code); if (c.err) { st.err = c.err; st.dead = true; return true; }
+    st.io = mcuIO(p, st, M); st.vm = new McuVM(c.prog, st.io); st.vm.vt = now; st.t0 = now; st.gen = st.vm.main(M.dial === 'ard' ? 'ard' : 'c');
+    if (st.io.reset) st.io.reset();
+  }
+  if (st.dead || st.halt) return false;
+  const before = mcuPinSig(st);
+  st.io.r = r; st.io.S = S; st.vm.limit = now; st.vm.cap = st.vm.ops + 400000;
+  try { const res = st.gen.next(); if (res.done) st.halt = true; } catch (e) { st.err = e.msg || String(e); st.dead = true; }
+  if (st.vm.vt < now - 200) st.vm.vt = now - 200;
+  const sig = S.__sig || (S.__sig = {});
+  for (const [t, q] of Object.entries(st.pin)) { const n = r.find(p.id + ':' + t); if (q.m === 'out' || q.servo != null) sig[n] = { pwm: q.pwm, servo: q.servo, tone: q.tone, v: q.v }; else delete sig[n]; }
+  if (st.lcd && M.sda) (S.__i2c || (S.__i2c = {}))[r.find(p.id + ':' + M.sda)] = st.lcd;
+  return mcuPinSig(st) !== before;
+}
+
+/* ---------- linh kiện bo vi điều khiển ---------- */
+def('mcu', {
+  name: 'Bo vi điều khiển (Arduino, ESP32, 8051, PIC, STM32)', short: 'Vi điều khiển', cats: ['mcu'], w: 470, h: 220, prefix: 'U',
+  terms: p => { const M = mcuM(p), W = mcuW(M); return [...M.top.map((t, i) => [t, 26 + i * 27, 0, 't', M.lab(t)]), ...M.bot.map((t, i) => [t, 26 + i * 27, 220, 'b', M.lab(t)])]; },
+  el: (p, S) => {
+    const st = T(S, p.tag), M = mcuM(p), e = [];
+    for (const t of [...M.top, ...M.bot]) if (MCU_SUP[t]) e.push({ k: 'src', t, pot: MCU_SUP[t] === 'V5' && M.vh === 'V33' && t !== 'VIN' && t !== '5V' ? 'V33' : MCU_SUP[t] });
+    for (const [t, q] of Object.entries(st.pin || {})) {
+      if (q.m === 'out') e.push({ k: 'src', t, pot: q.v ? M.vh : 'G' });
+      else if (q.m === 'pu' || (q.m === 'qb' && q.v)) e.push({ k: 'wsrc', t, pot: M.vh });
+      else if (q.m === 'pd') e.push({ k: 'wsrc', t, pot: 'G' });
+      else if (q.m === 'qb' && !q.v) e.push({ k: 'src', t, pot: 'G' });
+    }
+    e.push({ k: 'logic', fn: (r, now) => mcuLogic(p, st, S, r, now) });
+    return e; },
+  draw: (p, v) => mcuDraw(p, v.mc || {}),
+  info: 'Bo mạch vi điều khiển lập trình được bằng C: chọn Arduino Uno, ESP32, 8051 (AT89S52), PIC16F877A hoặc STM32 Blue Pill, viết chương trình ngay trong app rồi bấm Chạy. Bo được cấp nguồn qua cổng USB, có sẵn chân nguồn 5V/3V3 và GND để cấp cho linh kiện. Ngõ ra mức cao bằng điện áp chip (5 V hoặc 3,3 V), mỗi chân chỉ chịu dòng nhỏ (khoảng 20 mA): LED phải có điện trở hạn dòng, động cơ, rơ le phải qua transistor hoặc module driver.'
+});
+function mcuDraw(p, st) {
+  const M = mcuM(p), W = mcuW(M), q = t => (st.pin || {})[t] || {}, ledOn = M.led && q(M.led).m === 'out' && (M.ledLow ? !q(M.led).v : q(M.led).v);
+  const run = st.vm && !st.dead, err = st.err;
+  return `<rect x="0" y="0" width="${W}" height="220" rx="12" fill="${M.color}"/><rect x="8" y="22" width="${W - 16}" height="176" rx="8" fill="rgba(255,255,255,.07)"/>` +
+    `<rect x="${-14}" y="78" width="36" height="46" rx="4" class="b-metal"/>` + txt(4, 140, 'USB', 'pl-w') +
+    `<rect x="${W / 2 - 60}" y="70" width="120" height="62" rx="5" class="b-dark"/>` + [0, 1, 2, 3, 4, 5, 6].map(i => `<rect x="${W / 2 - 54 + i * 16}" y="64" width="6" height="6" class="b-metal"/><rect x="${W / 2 - 54 + i * 16}" y="132" width="6" height="6" class="b-metal"/>`).join('') +
+    txt(W / 2, 98, M.short, 'pl-w') + txt(W / 2, 116, err ? 'LỖI CHƯƠNG TRÌNH' : run ? (st.halt ? 'đã chạy xong main()' : 'đang chạy') : 'chưa chạy', err ? 'pl-r' : 'pl-w') +
+    `<circle cx="${W - 40}" cy="${50}" r="6" class="${st.vm ? 'led-on' : 'led-off'}"/>` + txt(W - 40, 70, 'PWR', 'pl-w') +
+    (M.led ? `<circle cx="${W - 70}" cy="50" r="6" class="${ledOn ? 'led-out' : 'led-off'}"/>` + txt(W - 70, 70, M.led === 'D13' ? 'L' : M.led, 'pl-w') : '') +
+    `<rect x="12" y="160" width="${W - 24}" height="26" rx="4" class="b-darker"/>` + txt(W / 2, 178, err ? err.slice(0, 60) : st.ser ? '› ' + st.ser.trim().split('\n').pop().slice(0, 52) : M.lang, err ? 'pl-r' : 'pl-w') +
+    tagLbl(p, W + 4, 110);
+}
+
+/* ---------- chương trình mẫu ---------- */
+const MCU_EX = {
+  uno: [
+    ['Nháy LED (Blink)', `// Nháy LED: chân 13 -> điện trở 220 ohm -> LED -> GND
+void setup() {
+  pinMode(13, OUTPUT);
+}
+
+void loop() {
+  digitalWrite(13, HIGH);   // LED sáng
+  delay(500);
+  digitalWrite(13, LOW);    // LED tắt
+  delay(500);
+}`],
+    ['Nút nhấn bật/tắt LED', `// Nút nhấn: chân 2 -> nút -> GND (dùng điện trở kéo lên bên trong)
+// LED: chân 13 -> 220 ohm -> LED -> GND
+const int NUT = 2;
+const int LED = 13;
+
+void setup() {
+  pinMode(NUT, INPUT_PULLUP);
+  pinMode(LED, OUTPUT);
+}
+
+void loop() {
+  if (digitalRead(NUT) == LOW) {   // nhấn nút: chân bị kéo xuống GND
+    digitalWrite(LED, HIGH);
+  } else {
+    digitalWrite(LED, LOW);
+  }
+}`],
+    ['Đèn giao thông', `// Đỏ chân 8, vàng chân 9, xanh chân 10 (mỗi LED có điện trở 220 ohm)
+int DO_ = 8, VANG = 9, XANH = 10;
+
+void setup() {
+  pinMode(DO_, OUTPUT);
+  pinMode(VANG, OUTPUT);
+  pinMode(XANH, OUTPUT);
+}
+
+void den(int d, int v, int x, int thoiGian) {
+  digitalWrite(DO_, d);
+  digitalWrite(VANG, v);
+  digitalWrite(XANH, x);
+  delay(thoiGian);
+}
+
+void loop() {
+  den(0, 0, 1, 3000);   // xanh 3 giây
+  den(0, 1, 0, 1000);   // vàng 1 giây
+  den(1, 0, 0, 3000);   // đỏ 3 giây
+}`],
+    ['Biến trở chỉnh độ sáng LED (PWM)', `// Biến trở: 2 chân ngoài vào 5V và GND, chân giữa vào A0
+// LED chân 9 (có PWM ~) qua điện trở 220 ohm
+void setup() {
+  Serial.begin(9600);
+  pinMode(9, OUTPUT);
+}
+
+void loop() {
+  int giaTri = analogRead(A0);            // 0..1023
+  int doSang = map(giaTri, 0, 1023, 0, 255);
+  analogWrite(9, doSang);                 // 0..255
+  Serial.print("A0 = ");
+  Serial.print(giaTri);
+  Serial.print("  PWM = ");
+  Serial.println(doSang);
+  delay(200);
+}`],
+    ['Servo quay theo biến trở', `#include <Servo.h>
+// Servo: nâu GND, đỏ 5V, cam chân 9. Biến trở chân giữa vào A0
+Servo myservo;
+
+void setup() {
+  myservo.attach(9);
+}
+
+void loop() {
+  int v = analogRead(A0);
+  int goc = map(v, 0, 1023, 0, 180);
+  myservo.write(goc);
+  delay(20);
+}`],
+    ['Đo khoảng cách HC-SR04 + LCD I2C', `#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+// HC-SR04: Trig chân 9, Echo chân 10. LCD I2C: SDA = A4, SCL = A5
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+const int TRIG = 9, ECHO = 10;
+
+void setup() {
+  pinMode(TRIG, OUTPUT);
+  pinMode(ECHO, INPUT);
+  lcd.init();
+  lcd.backlight();
+}
+
+void loop() {
+  digitalWrite(TRIG, LOW);  delayMicroseconds(2);
+  digitalWrite(TRIG, HIGH); delayMicroseconds(10);
+  digitalWrite(TRIG, LOW);
+  long t = pulseIn(ECHO, HIGH);
+  int cm = t / 58;
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Khoang cach:");
+  lcd.setCursor(0, 1);
+  lcd.print(cm);
+  lcd.print(" cm");
+  delay(300);
+}`],
+    ['DHT11 bật rơ le quạt khi nóng', `#include <DHT.h>
+// DHT11: OUT chân 2. Rơ le 5V: IN chân 7 (kích mức cao), COM-NO đóng điện quạt/đèn 220V
+DHT dht(2, DHT11);
+const int ROLE = 7;
+
+void setup() {
+  Serial.begin(9600);
+  dht.begin();
+  pinMode(ROLE, OUTPUT);
+}
+
+void loop() {
+  float t = dht.readTemperature();
+  float h = dht.readHumidity();
+  Serial.print("Nhiet do: "); Serial.print(t);
+  Serial.print(" C  Do am: "); Serial.print(h); Serial.println(" %");
+  if (t > 30) digitalWrite(ROLE, HIGH);   // nóng: bật quạt
+  else if (t < 28) digitalWrite(ROLE, LOW);
+  delay(1000);
+}`],
+    ['LED 7 đoạn đếm 0–9', `// LED 7 đoạn katốt chung: a..g nối chân 2..8, COM nối GND
+const int seg[7] = {2, 3, 4, 5, 6, 7, 8};
+const byte so[10] = {
+  0b0111111, 0b0000110, 0b1011011, 0b1001111, 0b1100110,
+  0b1101101, 0b1111101, 0b0000111, 0b1111111, 0b1101111
+};
+
+void setup() {
+  for (int i = 0; i < 7; i++) pinMode(seg[i], OUTPUT);
+}
+
+void hienThi(int n) {
+  for (int i = 0; i < 7; i++) digitalWrite(seg[i], (so[n] >> i) & 1);
+}
+
+void loop() {
+  for (int n = 0; n <= 9; n++) {
+    hienThi(n);
+    delay(700);
+  }
+}`],
+    ['Điều khiển động cơ DC bằng L298N', `// L298N: ENA chân 9 (PWM), IN1 chân 8, IN2 chân 7. Nguồn động cơ 12V, nối chung GND
+const int ENA = 9, IN1 = 8, IN2 = 7;
+
+void setup() {
+  pinMode(ENA, OUTPUT); pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT);
+}
+
+void loop() {
+  digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);   // quay thuận
+  analogWrite(ENA, 255); delay(3000);
+  analogWrite(ENA, 120); delay(2000);                // chậm lại
+  digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);    // dừng
+  delay(1000);
+  digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH);   // quay ngược
+  analogWrite(ENA, 200); delay(3000);
+  digitalWrite(IN2, LOW); delay(1000);
+}`]
+  ],
+  esp32: [
+    ['Nháy LED GPIO2', `// ESP32: LED trên bo ở GPIO2. Mức cao 3,3 V
+void setup() {
+  pinMode(2, OUTPUT);
+}
+
+void loop() {
+  digitalWrite(2, HIGH);
+  delay(300);
+  digitalWrite(2, LOW);
+  delay(300);
+}`],
+    ['Nút nhấn bật rơ le đèn 220V', `// Nút: GPIO4 -> nút -> GND. Rơ le: IN nối GPIO23 (kích mức cao), VCC nối VIN (5V)
+const int NUT = 4, ROLE = 23;
+bool trangThai = false;
+bool truoc = HIGH;
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(NUT, INPUT_PULLUP);
+  pinMode(ROLE, OUTPUT);
+}
+
+void loop() {
+  bool nay = digitalRead(NUT);
+  if (truoc == HIGH && nay == LOW) {      // vừa nhấn xuống
+    trangThai = !trangThai;
+    digitalWrite(ROLE, trangThai);
+    Serial.println(trangThai ? "Den BAT" : "Den TAT");
+    delay(50);                            // chống dội phím
+  }
+  truoc = nay;
+}`],
+    ['Đọc biến trở (ADC 12 bit)', `// Biến trở: 3V3 - GPIO34 - GND. ADC ESP32 đọc 0..4095
+void setup() {
+  Serial.begin(115200);
+}
+
+void loop() {
+  int v = analogRead(34);
+  float u = v * 3.3 / 4095;
+  Serial.print("GPIO34 = "); Serial.print(v);
+  Serial.print("  dien ap = "); Serial.println(u);
+  delay(300);
+}`]
+  ],
+  c51: [
+    ['LED đuổi cổng P1', `#include <reg51.h>
+// 8 LED: +5V -> điện trở 330 -> LED -> chân P1.x (chân xuống 0 thì LED sáng)
+void delay_ms(unsigned int t) {
+  unsigned int i, j;
+  for (i = 0; i < t; i++)
+    for (j = 0; j < 123; j++);   // khoảng 1 ms với thạch anh 12 MHz
+}
+
+void main() {
+  unsigned char x = 0x01;
+  while (1) {
+    P1 = ~x;
+    delay_ms(200);
+    x = x << 1;
+    if (x == 0) x = 0x01;
+  }
+}`],
+    ['Nút nhấn P3.2 bật LED P1.0', `#include <reg51.h>
+sbit LED = P1^0;     // +5V -> 330 ohm -> LED -> P1.0
+sbit NUT = P3^2;     // P3.2 -> nút -> GND (8051 có sẵn điện trở kéo lên)
+
+void main() {
+  while (1) {
+    if (NUT == 0) LED = 0;   // nhấn: LED sáng
+    else LED = 1;
+  }
+}`]
+  ],
+  pic: [
+    ['Nháy LED RB0 (CCS C)', `#include <16F877A.h>
+#fuses HS, NOWDT, NOPROTECT, NOLVP
+#use delay(clock = 20000000)
+// RB0 -> 220 ohm -> LED -> GND
+void main() {
+  while (TRUE) {
+    output_high(PIN_B0);
+    delay_ms(500);
+    output_low(PIN_B0);
+    delay_ms(500);
+  }
+}`],
+    ['Nháy LED RB0 (MPLAB XC8)', `#include <xc.h>
+#define _XTAL_FREQ 20000000
+void main(void) {
+  TRISB = 0x00;        // cổng B là ngõ ra
+  PORTB = 0x00;
+  while (1) {
+    PORTBbits.RB0 = 1;
+    __delay_ms(500);
+    PORTBbits.RB0 = 0;
+    __delay_ms(500);
+  }
+}`],
+    ['Biến trở RA0 hiển thị 8 LED cổng B', `#include <16F877A.h>
+#device ADC=10
+#use delay(clock = 20000000)
+// Biến trở chân giữa vào RA0 (AN0); 8 LED ở RB0..RB7
+void main() {
+  setup_adc_ports(AN0);
+  setup_adc(ADC_CLOCK_INTERNAL);
+  set_adc_channel(0);
+  while (TRUE) {
+    int16 v = read_adc();         // 0..1023
+    output_b(v >> 2);             // 0..255
+    delay_ms(50);
+  }
+}`]
+  ],
+  stm32: [
+    ['Nháy LED PC13 (HAL)', `#include "main.h"
+// LED trên bo Blue Pill ở PC13, sáng khi chân xuống 0
+int main(void) {
+  HAL_Init();
+  SystemClock_Config();
+  MX_GPIO_Init();
+  while (1) {
+    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+    HAL_Delay(500);
+  }
+}`],
+    ['Nút PA0 bật LED PB0 (HAL)', `#include "main.h"
+// Nút: PA0 -> nút -> GND (kéo lên bên trong). LED: PB0 -> 220 ohm -> LED -> GND
+int main(void) {
+  HAL_Init();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  while (1) {
+    if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_RESET)
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+    else
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+  }
+}`]
+  ]
+};
+
+/* ===================== LINH KIỆN ĐIỆN TỬ CHO MÔN VI ĐIỀU KHIỂN ===================== */
+const LVhi = (r, k) => { const w = r.potW(k); return w && LV[w.p] >= 2 ? 1 : w && (w.p === 'G' || LV[w.p] < 1) ? 0 : null; };
+const LEDCOL = { red: ['#ff3b30', 'Đỏ'], green: ['#34c759', 'Xanh lá'], yellow: ['#ffcc00', 'Vàng'], blue: ['#2f7cf6', 'Xanh dương'], white: ['#f2f4f7', 'Trắng'] };
+const pcb = (w, h, col = '#1f6f4a') => `<rect x="0" y="0" width="${w}" height="${h}" rx="6" fill="${col}"/>`;
+const pinsLbl = (arr, w, y) => '';
+const OHM = [['220', '220 Ω'], ['330', '330 Ω'], ['1000', '1 kΩ'], ['4700', '4,7 kΩ'], ['10000', '10 kΩ']];
+const BAND = ['#111', '#7b4a12', '#d11', '#f80', '#fd0', '#2a2', '#22d', '#a3d', '#888', '#fff'];
+function bands(ohm) { const s = String(+ohm || 220), d = s.slice(0, 2).padEnd(2, '0'), m = s.length - 2; return [BAND[+d[0]], BAND[+d[1]], BAND[Math.max(0, m)], '#c9a227']; }
+
+/* ---- nguồn ---- */
+def('usb5', { name: 'Nguồn 5V (cổng USB / adapter 5V)', short: 'Nguồn 5V', cats: ['mcu'], w: 90, h: 70, prefix: 'G',
+  terms: [['5V', 25, 70, 'b', '+5V'], ['GND', 65, 70, 'b', 'GND']], el: () => [{ k: 'src', t: '5V', pot: 'V5' }, { k: 'src', t: 'GND', pot: 'G' }],
+  draw: p => box(90, 70, 'b-dark', 8) + `<rect x="30" y="-10" width="30" height="16" rx="3" class="b-metal"/>` + txt(45, 36, '5V DC', 'lcd big') + txt(45, 56, 'USB', 'pl-w') + tagLbl(p, 94, 36),
+  info: 'Nguồn 5 V một chiều (sạc điện thoại, cổng USB máy tính) cấp cho mạch điện tử, module cảm biến. Dòng thường 0,5–2 A.' });
+def('pin9', { name: 'Pin 9V', short: 'Pin 9V', cats: ['mcu'], w: 70, h: 100, prefix: 'G',
+  terms: [['+', 20, 0, 't', '+9V'], ['-', 50, 0, 't', '−']], el: () => [{ k: 'src', t: '+', pot: 'V9' }, { k: 'src', t: '-', pot: 'G' }],
+  draw: p => box(70, 100, 'b-dark', 6) + `<rect x="0" y="40" width="70" height="60" rx="6" fill="#d9a400"/>` + txt(35, 28, '9V', 'lcd big') + txt(35, 76, 'PIN', 'pl') + tagLbl(p, 74, 50),
+  info: 'Pin 9 V vuông, dùng cấp cho mạch nhỏ qua IC ổn áp 7805, hoặc cấp chân VIN của Arduino. Không cấp thẳng 9 V vào chân 5V của vi điều khiển.' });
+def('ad12', { name: 'Adapter 12V DC', short: 'Adapter 12V', cats: ['mcu'], w: 100, h: 70, prefix: 'G',
+  terms: [['+', 30, 70, 'b', '+12V'], ['-', 70, 70, 'b', 'GND']], el: () => [{ k: 'src', t: '+', pot: 'V12' }, { k: 'src', t: '-', pot: 'G' }],
+  draw: p => box(100, 70, 'b-dark', 8) + txt(50, 34, '12V DC', 'lcd big') + txt(50, 54, '2A', 'pl-w') + tagLbl(p, 104, 36),
+  info: 'Nguồn 12 V một chiều cho động cơ, module L298N, dải LED. Nối chung GND với GND của vi điều khiển để có mức tham chiếu chung.' });
+def('lm7805', { name: 'IC ổn áp 7805 (module)', short: '7805', cats: ['mcu'], w: 90, h: 80, prefix: 'U',
+  terms: [['IN', 20, 80, 'b', 'IN'], ['GND', 45, 80, 'b', 'GND'], ['OUT', 70, 80, 'b', 'OUT 5V']],
+  el: (p, S) => { const st = T(S, p.tag); return [...(st.on ? [{ k: 'src', t: 'OUT', pot: 'V5' }] : []), { k: 'logic', fn: r => { const v = LV[r.potOf(p.id + ':IN')], on = v >= 7 && r.potOf(p.id + ':GND') === 'G'; if (!!st.on !== on) { st.on = on; return true; } return false; } }]; },
+  draw: (p, v) => pcb(90, 80) + `<rect x="25" y="8" width="40" height="44" rx="3" class="b-dark"/><rect x="22" y="0" width="46" height="12" rx="2" class="b-metal"/>` + txt(45, 38, '7805', 'pl-w') + `<circle cx="75" cy="20" r="4" class="${v.st && v.st.on ? 'led-err' : 'led-off'}"/>` + tagLbl(p, 94, 40),
+  info: 'IC ổn áp 7805 hạ điện áp 7–35 V (pin 9 V, adapter 12 V) xuống 5 V ổn định. Chân IN – GND – OUT. Cần ít nhất 7 V ở đầu vào.' });
+
+/* ---- linh kiện cơ bản ---- */
+def('dtro', { name: 'Điện trở', short: 'Điện trở', cats: ['mcu'], w: 90, h: 30, prefix: 'R',
+  terms: [['1', 0, 15, 'l', ''], ['2', 90, 15, 'r', '']], props: [{ k: 'ohm', l: 'Giá trị', o: OHM.map(([v, l]) => ({ v, l })), d: '220' }],
+  el: () => [{ k: 'res', a: '1', b: '2' }],
+  draw: p => { const b = bands(p.ohm); return `<path d="M0 15H18M72 15H90" class="sl"/><rect x="18" y="5" width="54" height="20" rx="9" fill="#e8d2a6" stroke="#9c7b45"/>` + b.map((c, i) => `<rect x="${26 + i * 10 + (i === 3 ? 6 : 0)}" y="5" width="5" height="20" fill="${c}"/>`).join('') + txt(45, 40, (OHM.find(o => o[0] === String(p.ohm)) || OHM[0])[1], 'pl-s') + tagLbl(p, 45, -6); },
+  info: 'Điện trở hạn dòng cho LED (220–330 Ω với 5 V), điện trở kéo lên / kéo xuống cho nút nhấn (10 kΩ), điện trở nối chân base transistor (1 kΩ). Không phân cực. Đọc giá trị theo vạch màu: 2 vạch đầu là số, vạch 3 là số mũ 10.' });
+def('led5', { name: 'LED đơn 5 mm', short: 'LED', cats: ['mcu'], w: 40, h: 80, prefix: 'D',
+  terms: [['A', 12, 80, 'b', 'A+'], ['K', 28, 80, 'b', 'K−']], props: [{ k: 'color', l: 'Màu', o: Object.entries(LEDCOL).map(([v, [, l]]) => ({ v, l })), d: 'red' }],
+  el: p => [{ k: 'led', a: 'A', b: 'K', color: p.color }],
+  draw: (p, v) => { const c = (LEDCOL[p.color] || LEDCOL.red)[0], on = v.lit, br = v.br ?? 1;
+    return `<path d="M12 50V80M28 50V80" class="sl"/><path d="M4 50V24a16 16 0 0 1 32 0V50Z" fill="${c}" fill-opacity="${on ? 0.35 + 0.65 * br : 0.28}" stroke="${c}"/>` + (on ? `<circle cx="20" cy="26" r="${14 + 10 * br}" fill="${c}" opacity="${0.25 * br}"/>` : '') + `<rect x="2" y="48" width="36" height="5" rx="2" fill="${c}" opacity=".6"/>` + (v.burnt ? burntMark(20, 30) : '') + tagLbl(p, 44, 30); },
+  info: 'LED (đi-ốt phát quang): chân dài là Anốt (+), chân ngắn là Katốt (−). Sáng khi A cao hơn K khoảng 1,8–3,2 V. Bắt buộc mắc nối tiếp điện trở hạn dòng 220–330 Ω khi dùng 5 V; nối thẳng vào nguồn LED sẽ cháy.' });
+def('ledrgb', { name: 'LED RGB katốt chung (module có điện trở)', short: 'LED RGB', cats: ['mcu'], w: 70, h: 80, prefix: 'D',
+  terms: [['R', 12, 80, 'b', 'R'], ['G', 28, 80, 'b', 'G'], ['B', 44, 80, 'b', 'B'], ['K', 60, 80, 'b', '−']],
+  el: () => ['R', 'G', 'B'].map(c => ({ k: 'led', a: c, b: 'K', part: c, noBurn: 1 })),
+  draw: (p, v) => { const L = v.ledb || {}, g = c => L[p.id + ':' + c], col = `rgb(${Math.round(255 * (g('R') || 0))},${Math.round(255 * (g('G') || 0))},${Math.round(255 * (g('B') || 0))})`, any = g('R') || g('G') || g('B');
+    return pcb(70, 56, '#222') + `<circle cx="35" cy="26" r="16" fill="${any ? col : '#ddd'}" stroke="#999"/>` + (any ? `<circle cx="35" cy="26" r="26" fill="${col}" opacity=".3"/>` : '') + tagLbl(p, 74, 30); },
+  info: 'LED RGB 3 màu chung katốt: nối chân − về GND, cấp mức cao (hoặc PWM bằng analogWrite) vào R, G, B để trộn màu. Module đã có sẵn điện trở hạn dòng.' });
+def('tact', { name: 'Nút nhấn 4 chân (tact switch)', short: 'Nút tact', cats: ['mcu'], w: 60, h: 60, prefix: 'S', interact: 'press',
+  terms: [['1', 10, 0, 't', '1'], ['2', 50, 0, 't', '2'], ['3', 10, 60, 'b', '3'], ['4', 50, 60, 'b', '4']],
+  el: (p, S) => [{ k: 'link', a: '1', b: '3' }, { k: 'link', a: '2', b: '4' }, ...(T(S, p.tag).pressed ? [{ k: 'link', a: '1', b: '2' }] : [])],
+  draw: (p, v) => `<rect x="4" y="6" width="52" height="48" rx="4" class="b-dark"/><circle cx="30" cy="30" r="${v.pressed ? 12 : 14}" fill="${v.pressed ? '#555' : '#333'}" stroke="#777"/>` + tagLbl(p, 64, 30),
+  info: 'Nút nhấn nhỏ 4 chân: 2 chân cùng phía dọc (1–3 và 2–4) luôn nối với nhau; nhấn thì 1–3 nối với 2–4. Đọc nút bằng vi điều khiển cần điện trở kéo lên (hoặc INPUT_PULLUP) hoặc kéo xuống 10 kΩ để chân không bị thả nổi.' });
+def('gat', { name: 'Công tắc gạt 3 chân', short: 'Công tắc gạt', cats: ['mcu'], w: 70, h: 50, prefix: 'S', interact: 'toggle',
+  terms: [['1', 12, 50, 'b', '1'], ['C', 35, 50, 'b', 'C'], ['2', 58, 50, 'b', '2']],
+  el: (p, S) => [{ k: 'link', a: 'C', b: T(S, p.tag).act ? '2' : '1' }],
+  draw: (p, v) => `<rect x="4" y="10" width="62" height="30" rx="4" class="b-metal"/><rect x="${v.act ? 38 : 14}" y="0" width="18" height="18" rx="3" class="b-dark"/>` + tagLbl(p, 74, 26),
+  info: 'Công tắc gạt 1 cực 2 vị trí: chân giữa C nối với chân 1 hoặc chân 2 tùy vị trí gạt.' });
+def('pot10k', { name: 'Biến trở 10 kΩ (chiết áp)', short: 'Biến trở', cats: ['mcu'], w: 70, h: 80, prefix: 'RV',
+  terms: [['1', 15, 80, 'b', '1'], ['2', 35, 80, 'b', '2 (W)'], ['3', 55, 80, 'b', '3']], props: [{ k: 'val', l: 'Vị trí núm ban đầu (%)', num: 1, d: 50 }],
+  ana: { min: 0, max: 100, step: 1, unit: '%', label: 'Vị trí núm' },
+  el: (p, S) => { const pos = (T(S, p.tag).val ?? (+p.val ?? 50)) / 100; return [{ k: 'aout', t: '2', rel: 1, need: '3', gnd: '1', val: pos }, { k: 'aout', t: '2', rel: 1, need: '1', gnd: '3', val: 1 - pos }]; },
+  draw: (p, v) => { const pos = v.val ?? (+p.val ?? 50), a = -135 + 270 * pos / 100; return `<rect x="5" y="20" width="60" height="44" rx="4" class="b-metal"/><g transform="translate(35 34) rotate(${a})"><circle r="17" class="b-dark"/><rect x="-2" y="-16" width="4" height="9" fill="#fff"/></g>` + txt(35, 14, Math.round(pos) + ' %', 'pl-s') + tagLbl(p, 74, 40); },
+  info: 'Biến trở 3 chân: hai chân ngoài nối +5V (hoặc 3,3 V) và GND, chân giữa (con trượt W) cho điện áp 0 → Vcc theo vị trí núm, đưa vào chân analog (A0) để đọc bằng analogRead.' });
+def('npn', { name: 'Transistor NPN (C1815 / 2N2222)', short: 'NPN', cats: ['mcu'], w: 60, h: 70, prefix: 'Q',
+  terms: [['E', 12, 70, 'b', 'E'], ['B', 30, 70, 'b', 'B'], ['C', 48, 70, 'b', 'C']],
+  el: (p, S) => { const st = T(S, p.tag); return [...(st.on ? [{ k: 'link', a: 'C', b: 'E' }] : []), { k: 'logic', fn: r => { const on = LVhi(r, p.id + ':B') === 1 && r.potOf(p.id + ':E') === 'G'; if (!!st.on !== on) { st.on = on; return true; } return false; } }]; },
+  draw: (p, v) => `<path d="M8 46V22a22 22 0 0 1 44 0V46Z" class="b-dark"/>` + txt(30, 34, 'NPN', 'pl-w') + `<path d="M12 46V70M30 46V70M48 46V70" class="sl"/>` + `<circle cx="30" cy="12" r="4" class="${v.st && v.st.on ? 'led-on' : 'led-off'}"/>` + tagLbl(p, 64, 30),
+  info: 'Transistor NPN làm công tắc: chân E nối GND, tải (rơ le, còi, động cơ nhỏ) nối giữa +V và C. Chân B nhận tín hiệu từ vi điều khiển qua điện trở 1 kΩ: B mức cao thì C–E dẫn, tải chạy. Dùng khi tải cần dòng lớn hơn khả năng chân vi điều khiển. Với cuộn dây nên lắp đi-ốt chống ngược song song tải.' });
+
+/* ---- thiết bị ra ---- */
+def('buzz5', { name: 'Còi chip 5V (active buzzer)', short: 'Còi 5V', cats: ['mcu'], w: 50, h: 60, prefix: 'BZ',
+  terms: [['+', 15, 60, 'b', '+'], ['-', 35, 60, 'b', '−']], el: () => [{ k: 'buz', a: '+', b: '-' }],
+  draw: (p, v) => `<circle cx="25" cy="26" r="22" class="b-dark"/><circle cx="25" cy="26" r="4" fill="#888"/>` + (v.lit ? [28, 34].map(r => `<circle cx="25" cy="26" r="${r}" class="wave on"/>`).join('') : '') + tagLbl(p, 54, 26),
+  info: 'Còi chip có sẵn mạch dao động: cấp 5 V đúng cực (+ dài) là kêu. Chân vi điều khiển kéo được còi nhỏ trực tiếp; còi lớn dùng transistor.' });
+def('relay5', { name: 'Module rơ le 5V 1 kênh', short: 'Rơ le 5V', cats: ['mcu', 'ind', 'dom'], w: 110, h: 90, prefix: 'K',
+  terms: [['VCC', 15, 90, 'b', 'VCC'], ['GND', 40, 90, 'b', 'GND'], ['IN', 65, 90, 'b', 'IN'], ['NO', 25, 0, 't', 'NO'], ['COM', 55, 0, 't', 'COM'], ['NC', 85, 0, 't', 'NC']],
+  props: [{ k: 'trig', l: 'Kích mức', o: [{ v: 'L', l: 'Mức thấp (LOW = đóng)' }, { v: 'H', l: 'Mức cao (HIGH = đóng)' }], d: 'H' }],
+  el: (p, S) => { const st = T(S, p.tag); return [{ k: 'pwr', a: 'VCC', b: 'GND', tag: p.tag, v: '5DC', w: 0.4 }, { k: 'link', a: 'COM', b: st.on ? 'NO' : 'NC' },
+    { k: 'logic', fn: r => { const h = LVhi(r, p.id + ':IN'), on = !!st.psu && (p.trig === 'L' ? h === 0 : h === 1); if (!!st.on !== on) { st.on = on; return true; } return false; } }]; },
+  draw: (p, v) => pcb(110, 90, '#1e3a8a') + `<rect x="15" y="14" width="52" height="40" rx="3" fill="#1d4ed8" stroke="#93c5fd"/>` + txt(41, 38, 'SRD-5V', 'pl-w') + `<rect x="74" y="14" width="30" height="22" rx="2" class="b-light"/>` +
+    `<circle cx="84" cy="50" r="4" class="${v.st && v.st.psu ? 'led-err' : 'led-off'}"/><circle cx="98" cy="50" r="4" class="${v.st && v.st.on ? 'led-on' : 'led-off'}"/>` + txt(55, 74, p.trig === 'L' ? 'KÍCH MỨC THẤP' : 'KÍCH MỨC CAO', 'pl-w') + tagLbl(p, 114, 46),
+  info: 'Module rơ le 5 V cho vi điều khiển đóng cắt tải 220 V (đèn, quạt, bơm): VCC–GND nối 5 V, IN nối chân điều khiển. Tiếp điểm COM–NO đóng khi rơ le hút, COM–NC đóng khi nhả. Nhiều module kích mức thấp (IN = LOW thì đóng). Cẩn thận phía 220 V: không chạm vào mặt dưới module khi có điện.' });
+def('servo', { name: 'Động cơ servo SG90', short: 'Servo SG90', cats: ['mcu'], w: 110, h: 80, prefix: 'M',
+  terms: [['GND', 20, 80, 'b', 'GND nâu'], ['VCC', 50, 80, 'b', '5V đỏ'], ['SIG', 80, 80, 'b', 'SIG cam']],
+  el: (p, S) => { const st = T(S, p.tag); return [{ k: 'pwr', a: 'VCC', b: 'GND', tag: p.tag, v: '5DC', w: 1 }, { k: 'logic', fn: (r, now) => { const sg = (S.__sig || {})[r.find(p.id + ':SIG')]; const tg = st.psu && sg && sg.servo != null ? sg.servo : st.tg ?? 90; st.tg = tg; const dt = st.lt === undefined ? 0 : (now - st.lt) / 1000; st.lt = now; const a = st.ang ?? 90; st.ang = tg > a ? Math.min(tg, a + 600 * dt) : Math.max(tg, a - 600 * dt); return false; } }]; },
+  draw: (p, v) => { const a = (v.st && v.st.ang) ?? 90; return `<rect x="10" y="20" width="90" height="44" rx="4" fill="#2f6fd6"/>` + txt(55, 50, 'SG90', 'pl-w') + `<circle cx="34" cy="20" r="11" class="b-light"/><g transform="translate(34 20) rotate(${90 - a})"><rect x="-4" y="-34" width="8" height="34" rx="4" class="b-light"/></g>` + txt(80, 14, Math.round(a) + '°', 'pl-s') + tagLbl(p, 114, 40); },
+  info: 'Servo SG90 quay đến góc 0–180° theo xung PWM 50 Hz. Dây nâu GND, đỏ 5 V, cam tín hiệu nối chân vi điều khiển. Arduino dùng thư viện Servo: myservo.attach(9); myservo.write(90);. Servo lớn nên cấp nguồn 5 V riêng, nối chung GND.' });
+def('seg7', { name: 'LED 7 đoạn 1 số (module có điện trở)', short: 'LED 7 đoạn', cats: ['mcu'], w: 140, h: 120, prefix: 'DS',
+  terms: [...['a', 'b', 'c', 'd', 'e', 'f', 'g', 'dp'].map((s, i) => [s, 14 + i * 15, 120, 'b', s]), ['COM', 130, 120, 'b', 'COM']],
+  props: [{ k: 'ct', l: 'Loại', o: [{ v: 'CC', l: 'Katốt chung (COM nối GND)' }, { v: 'CA', l: 'Anốt chung (COM nối 5V)' }], d: 'CC' }],
+  el: p => ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'dp'].map(s => p.ct === 'CA' ? { k: 'led', a: 'COM', b: s, part: s, noBurn: 1 } : { k: 'led', a: s, b: 'COM', part: s, noBurn: 1 }),
+  draw: (p, v) => { const L = v.ledb || {}, on = s => !!L[p.id + ':' + s], c = s => on(s) ? '#ff3b30' : 'rgba(255,80,60,.13)';
+    const H = (x, y, s) => `<rect x="${x}" y="${y}" width="34" height="8" rx="4" fill="${c(s)}"/>`, Vv = (x, y, s) => `<rect x="${x}" y="${y}" width="8" height="34" rx="4" fill="${c(s)}"/>`;
+    return box(140, 104, 'b-dark', 6) + `<g transform="translate(46 8) skewX(-6)">${H(8, 0, 'a')}${Vv(42, 6, 'b')}${Vv(42, 46, 'c')}${H(8, 80, 'd')}${Vv(0, 46, 'e')}${Vv(0, 6, 'f')}${H(8, 40, 'g')}</g><circle cx="104" cy="92" r="4" fill="${c('dp')}"/>` + txt(20, 56, p.ct === 'CA' ? 'CA' : 'CC', 'pl-w') + tagLbl(p, 144, 50); },
+  info: 'LED 7 đoạn gồm 7 thanh a–g và dấu chấm dp. Loại katốt chung: COM nối GND, cấp mức cao vào thanh nào thì thanh đó sáng. Loại anốt chung: COM nối 5V, thanh sáng khi mức thấp. Ví dụ số 0 sáng a, b, c, d, e, f. Module trong app đã có điện trở hạn dòng cho từng thanh.' });
+def('lcd16', { name: 'LCD 16x2 giao tiếp I2C (PCF8574)', short: 'LCD I2C', cats: ['mcu'], w: 230, h: 90, prefix: 'LCD',
+  terms: [['GND', 120, 90, 'b', 'GND'], ['VCC', 150, 90, 'b', 'VCC'], ['SDA', 180, 90, 'b', 'SDA'], ['SCL', 210, 90, 'b', 'SCL']],
+  el: (p, S) => { const st = T(S, p.tag); return [{ k: 'pwr', a: 'VCC', b: 'GND', tag: p.tag, v: '5DC', w: 0.2 }, { k: 'logic', fn: r => { const b = st.psu ? (S.__i2c || {})[r.find(p.id + ':SDA')] : null; st.buf = b || null; return false; } }]; },
+  draw: (p, v) => { const st = v.st || {}, b = st.buf, on = st.psu, bl = b && b.bl;
+    return pcb(230, 90, '#14532d') + `<rect x="10" y="10" width="210" height="58" rx="4" fill="${on ? (bl ? '#7dd3fc' : '#3b82a0') : '#2b4a57'}"/>` + (b ? (b.lines || []).map((l, i) => `<text x="18" y="${32 + i * 24}" class="lcdtxt">${esc(l.padEnd(16, ' ').slice(0, 16).replace(/ /g, ' '))}</text>`).join('') : on ? `<text x="18" y="32" class="lcdtxt">${'█'.repeat(16)}</text>` : '') + tagLbl(p, 234, 40); },
+  info: 'Màn hình LCD 16 cột x 2 dòng có module I2C phía sau: chỉ cần 4 dây GND, VCC (5 V), SDA, SCL. Arduino Uno: SDA = A4, SCL = A5; ESP32: SDA = GPIO21, SCL = GPIO22. Địa chỉ thường 0x27 hoặc 0x3F. Thư viện LiquidCrystal_I2C: lcd.init(); lcd.backlight(); lcd.setCursor(0, 0); lcd.print("Xin chao");' });
+
+/* ---- động cơ ---- */
+def('mdc', { name: 'Động cơ DC nhỏ (3–12V)', short: 'Động cơ DC', cats: ['mcu'], w: 90, h: 80, prefix: 'M',
+  terms: [['+', 30, 80, 'b', '+'], ['-', 60, 80, 'b', '−']], el: () => [{ k: 'motorlv', a: '+', b: '-' }],
+  draw: (p, v) => { const run = v.motor && v.motor.run; return `<rect x="10" y="10" width="62" height="50" rx="10" fill="#d4a017"/><rect x="72" y="28" width="16" height="14" rx="2" class="b-metal"/><g transform="translate(41 35) rotate(${v.ang || 0})"><path d="M0-18V18M-18 0H18" stroke="#333" stroke-width="5" stroke-linecap="round"/></g>` + txt(45, 74, run ? (v.motor.dir > 0 ? 'quay thuận' : 'quay ngược') : 'dừng', run ? 'pl-o' : 'pl-s') + tagLbl(p, 94, 30); },
+  info: 'Động cơ DC giảm tốc nhỏ (motor vàng) dùng cho xe robot. Đổi cực + − thì đổi chiều quay. Không nối trực tiếp vào chân vi điều khiển: dùng module L298N hoặc transistor.' });
+def('l298n', { name: 'Module điều khiển động cơ L298N', short: 'L298N', cats: ['mcu'], w: 170, h: 110, prefix: 'U',
+  terms: [['OUT1', 20, 0, 't', 'OUT1'], ['OUT2', 45, 0, 't', 'OUT2'], ['12V', 20, 110, 'b', '12V'], ['GND', 45, 110, 'b', 'GND'], ['5V', 70, 110, 'b', '5V'], ['ENA', 100, 110, 'b', 'ENA'], ['IN1', 125, 110, 'b', 'IN1'], ['IN2', 150, 110, 'b', 'IN2']],
+  el: (p, S) => { const st = T(S, p.tag), e = [{ k: 'pwr', a: '12V', b: 'GND', tag: p.tag, v: '12DC', w: 0.5 }];
+    if (st.psu) { e.push({ k: 'src', t: '5V', pot: 'V5' }); if (st.o1) e.push({ k: 'src', t: 'OUT1', pot: st.o1 }); if (st.o2) e.push({ k: 'src', t: 'OUT2', pot: st.o2 }); }
+    e.push({ k: 'logic', fn: r => { const vp = r.potOf(p.id + ':12V'), en = LVhi(r, p.id + ':ENA') === 1, a = LVhi(r, p.id + ':IN1') === 1, b = LVhi(r, p.id + ':IN2') === 1;
+      const o1 = st.psu && en ? (a ? vp : 'G') : null, o2 = st.psu && en ? (b ? vp : 'G') : null; const sig = S.__sig || (S.__sig = {}), en0 = sig[(r.potW(p.id + ':ENA') || {}).n];
+      const pw = en0 && en0.pwm != null ? en0.pwm : 1; sig[r.find(p.id + ':OUT1')] = { pwm: pw }; sig[r.find(p.id + ':OUT2')] = { pwm: pw };
+      if (st.o1 !== o1 || st.o2 !== o2) { st.o1 = o1; st.o2 = o2; return true; } return false; } });
+    return e; },
+  draw: (p, v) => pcb(170, 110, '#b91c1c') + `<rect x="62" y="16" width="46" height="50" rx="3" class="b-dark"/>` + Array.from({ length: 6 }, (_, i) => `<rect x="${66 + i * 7}" y="6" width="4" height="12" class="b-metal"/>`).join('') + txt(85, 46, 'L298N', 'pl-w') + `<circle cx="140" cy="30" r="4" class="${v.st && v.st.psu ? 'led-err' : 'led-off'}"/>` + txt(120, 84, v.st && (v.st.o1 || v.st.o2) ? 'ĐANG CẤP RA' : '', 'pl-w') + tagLbl(p, 174, 56),
+  info: 'Mạch cầu H L298N điều khiển động cơ DC 5–35 V: 12V–GND nối nguồn động cơ (nối chung GND với vi điều khiển), OUT1–OUT2 nối động cơ. ENA mức cao (hoặc PWM bằng analogWrite để chỉnh tốc độ) cho phép chạy; IN1 = 1, IN2 = 0 quay thuận, IN1 = 0, IN2 = 1 quay ngược, bằng nhau thì dừng. Chân 5V xuất 5 V từ ổn áp trên module.' });
+
+/* ---- cảm biến ---- */
+def('sr04', { name: 'Cảm biến siêu âm HC-SR04', short: 'HC-SR04', cats: ['mcu'], w: 130, h: 70, prefix: 'B',
+  terms: [['VCC', 20, 70, 'b', 'VCC'], ['TRIG', 50, 70, 'b', 'Trig'], ['ECHO', 80, 70, 'b', 'Echo'], ['GND', 110, 70, 'b', 'GND']], props: [{ k: 'val', l: 'Khoảng cách ban đầu (cm)', num: 1, d: 30 }],
+  ana: { min: 2, max: 400, step: 1, unit: 'cm', label: 'Khoảng cách tới vật' },
+  el: (p, S) => [{ k: 'pwr', a: 'VCC', b: 'GND', tag: p.tag, v: '5DC', w: 0.1 }, { k: 'dev', kind: 'sr04', t: 'ECHO', get: () => T(S, p.tag).val ?? (+p.val || 30) }],
+  draw: (p, v) => pcb(130, 56, '#1e40af') + [32, 98].map(x => `<circle cx="${x}" cy="26" r="20" class="b-metal"/><circle cx="${x}" cy="26" r="13" class="grille-c"/>`).join('') + txt(65, 14, Math.round(v.val ?? (+p.val || 30)) + ' cm', 'pl-w') + tagLbl(p, 134, 30),
+  info: 'Đo khoảng cách 2–400 cm bằng sóng siêu âm: phát xung 10 µs vào Trig, đo độ dài xung mức cao ở Echo (pulseIn) rồi chia 58 ra cm. Nguồn 5 V. Kéo thanh trượt để đổi khoảng cách khi mô phỏng.' });
+def('dht11', { name: 'Cảm biến nhiệt độ, độ ẩm DHT11', short: 'DHT11', cats: ['mcu'], w: 70, h: 90, prefix: 'B',
+  terms: [['VCC', 15, 90, 'b', '+'], ['DATA', 35, 90, 'b', 'OUT'], ['GND', 55, 90, 'b', '−']], props: [{ k: 'val', l: 'Nhiệt độ ban đầu (°C)', num: 1, d: 28 }, { k: 'hum', l: 'Độ ẩm (%)', num: 1, d: 65 }],
+  ana: { min: 0, max: 50, step: 1, unit: '°C', label: 'Nhiệt độ' },
+  el: (p, S) => [{ k: 'pwr', a: 'VCC', b: 'GND', tag: p.tag, v: '5DC', w: 0.01 }, { k: 'dev', kind: 'dht', t: 'DATA', get: () => ({ t: T(S, p.tag).val ?? (+p.val || 28), h: +p.hum || 65 }) }],
+  draw: (p, v) => `<rect x="8" y="4" width="54" height="66" rx="4" fill="#2f7cf6"/>` + Array.from({ length: 12 }, (_, i) => `<rect x="${14 + (i % 4) * 11}" y="${10 + Math.floor(i / 4) * 12}" width="7" height="8" fill="#1d4ed8"/>`).join('') + txt(35, 62, Math.round(v.val ?? (+p.val || 28)) + '°C', 'pl-w') + tagLbl(p, 74, 40),
+  info: 'DHT11 đo nhiệt độ 0–50 °C và độ ẩm 20–90 %, truyền số qua 1 dây DATA. Module 3 chân: + (5 V), OUT (nối chân số), − (GND). Arduino dùng thư viện DHT: DHT dht(2, DHT11); dht.begin(); dht.readTemperature();.' });
+def('ldr', { name: 'Module cảm biến ánh sáng (quang trở)', short: 'Cảm biến ánh sáng', cats: ['mcu'], w: 80, h: 80, prefix: 'B',
+  terms: [['VCC', 12, 80, 'b', 'VCC'], ['GND', 30, 80, 'b', 'GND'], ['DO', 48, 80, 'b', 'DO'], ['AO', 66, 80, 'b', 'AO']], props: [{ k: 'val', l: 'Độ sáng ban đầu (%)', num: 1, d: 60 }],
+  ana: { min: 0, max: 100, step: 1, unit: '%', label: 'Độ sáng môi trường' },
+  el: (p, S) => { const L = (T(S, p.tag).val ?? (+p.val ?? 60)) / 100; return [{ k: 'pwr', a: 'VCC', b: 'GND', tag: p.tag, v: '5DC', w: 0.01 }, { k: 'aout', t: 'AO', rel: 1, need: 'VCC', gnd: 'GND', val: 1 - L }, L > 0.5 ? { k: 'link', a: 'DO', b: 'GND' } : { k: 'res', a: 'DO', b: 'VCC' }]; },
+  draw: (p, v) => { const L = v.val ?? (+p.val ?? 60); return pcb(80, 64) + `<circle cx="22" cy="24" r="12" fill="#f0c14b"/><path d="M16 18l12 12M28 18l-12 12" stroke="#b5651d" stroke-width="2"/><rect x="44" y="12" width="26" height="26" rx="3" class="b-metal"/>` + `<circle cx="56" cy="52" r="4" class="${L > 50 ? 'led-on' : 'led-off'}"/>` + txt(24, 56, Math.round(L) + '%', 'pl-w') + tagLbl(p, 84, 30); },
+  info: 'Module quang trở với so sánh LM393: AO cho điện áp analog (sáng nhiều điện áp thấp), DO xuống mức LOW khi độ sáng vượt ngưỡng chỉnh bằng biến trở trên module. Dùng làm đèn tự bật khi trời tối.' });
+def('irmod', { name: 'Module cảm biến vật cản hồng ngoại', short: 'Cảm biến IR', cats: ['mcu'], w: 80, h: 70, prefix: 'B', interact: 'toggle',
+  terms: [['VCC', 20, 70, 'b', 'VCC'], ['GND', 40, 70, 'b', 'GND'], ['OUT', 60, 70, 'b', 'OUT']],
+  el: (p, S) => [{ k: 'pwr', a: 'VCC', b: 'GND', tag: p.tag, v: '5DC', w: 0.02 }, T(S, p.tag).act ? { k: 'link', a: 'OUT', b: 'GND' } : { k: 'res', a: 'OUT', b: 'VCC' }],
+  draw: (p, v) => pcb(80, 56) + `<circle cx="18" cy="20" r="9" fill="#ddd"/><circle cx="40" cy="20" r="9" fill="#222"/>` + (v.act ? `<rect x="2" y="-18" width="56" height="10" rx="3" class="rb-box"/>` : '') + `<circle cx="64" cy="40" r="4" class="${v.act ? 'led-on' : 'led-off'}"/>` + txt(30, 46, v.act ? 'CÓ VẬT' : '', 'pl-w') + tagLbl(p, 84, 30),
+  info: 'Cảm biến vật cản hồng ngoại: có vật ở gần thì OUT xuống mức LOW (đèn trên module sáng), không có vật OUT ở mức HIGH. Dùng cho xe dò line, đếm sản phẩm. Chạm vào cảm biến khi mô phỏng để đặt/bỏ vật.' });
+def('pir', { name: 'Cảm biến chuyển động PIR HC-SR501', short: 'PIR', cats: ['mcu'], w: 80, h: 80, prefix: 'B', interact: 'toggle',
+  terms: [['VCC', 20, 80, 'b', 'VCC'], ['OUT', 40, 80, 'b', 'OUT'], ['GND', 60, 80, 'b', 'GND']],
+  el: (p, S) => [{ k: 'pwr', a: 'VCC', b: 'GND', tag: p.tag, v: '5DC', w: 0.01 }, { k: 'link', a: 'OUT', b: T(S, p.tag).act ? 'VCC' : 'GND' }],
+  draw: (p, v) => pcb(80, 60) + `<path d="M12 50a28 28 0 0 1 56 0Z" fill="#f5f5f5" stroke="#ccc"/>` + (v.act ? txt(40, 22, 'CÓ NGƯỜI', 'pl-o') : '') + tagLbl(p, 84, 30),
+  info: 'Cảm biến thân nhiệt chuyển động PIR: có người di chuyển thì OUT lên mức cao vài giây. Nguồn 5 V. Chạm vào cảm biến khi mô phỏng để giả lập có người.' });
+def('lm35', { name: 'Cảm biến nhiệt độ LM35', short: 'LM35', cats: ['mcu'], w: 60, h: 70, prefix: 'B',
+  terms: [['VS', 12, 70, 'b', '+Vs'], ['OUT', 30, 70, 'b', 'Vout'], ['GND', 48, 70, 'b', 'GND']], props: [{ k: 'val', l: 'Nhiệt độ ban đầu (°C)', num: 1, d: 30 }],
+  ana: { min: 0, max: 100, step: 1, unit: '°C', label: 'Nhiệt độ' },
+  el: (p, S) => [{ k: 'aout', t: 'OUT', abs: 1, need: 'VS', gnd: 'GND', val: (T(S, p.tag).val ?? (+p.val || 30)) * 0.01 }],
+  draw: (p, v) => `<path d="M8 46V22a22 22 0 0 1 44 0V46Z" class="b-dark"/>` + txt(30, 30, 'LM35', 'pl-w') + txt(30, 42, Math.round(v.val ?? (+p.val || 30)) + '°C', 'pl-w') + `<path d="M12 46V70M30 46V70M48 46V70" class="sl"/>` + tagLbl(p, 64, 30),
+  info: 'LM35 cho điện áp ra tỉ lệ nhiệt độ: 10 mV/°C (30 °C = 0,30 V). Đọc bằng analogRead rồi đổi: nhiệt độ = giá trị × 500 / 1023 với Arduino Uno 5 V.' });
 
 /* ===== Bài mẫu ===== */
 function mk(mode) {
@@ -3017,6 +3973,66 @@ const TEMPLATES = [
       desc: 'PLC S7-1200 điều khiển robot gắp thả: 3 van khí nén 5/2 một đầu điện 24 V (Y1 trục X, Y2 trục Z, Y3 kẹp) nối ngõ ra Q0.0–Q0.2, 5 cảm biến vị trí a0, a1, b0, b1 và cảm biến có phôi P nối ngõ vào I0.2–I0.6. Chương trình LAD chạy tuần tự 8 bước bằng bit nhớ M1–M8 (SET bước sau, RESET bước trước). Nút dừng khẩn S0 cắt nguồn 24 V cấp cho các van bằng phần cứng, đồng thời báo về I0.7 để PLC xóa hết các bước.',
       steps: ['Bấm ▶ Chạy. Robot ở vị trí gốc: đèn a0 (X đã về) và b0 (Z ở trên) sáng, có phôi ở trạm lấy (P sáng).', 'Nhấn S1 (Start): M0 tự giữ, đèn H1 sáng. Robot chạy 8 bước: hạ Z → kẹp 0,5 s → nâng Z → X sang phải → hạ Z → nhả 0,5 s → nâng Z → X về. Còn phôi thì lặp lại.', 'Chạm PLC1 để xem sơ đồ thang chạy trực tiếp: bước nào đang chạy thì bit M đó sáng.', 'Nhấn S2 (Stop, đấu tiếp điểm thường đóng 21-22): robot làm hết chu trình đang dở rồi dừng ở gốc.', 'Chạm robot RB1 để tắt cấp phôi: hết phôi thì robot đứng chờ, đèn H2 nháy.', 'Đang chạy, ấn dừng khẩn S0: mất 24 V ở 1L, cả 3 van mất điện, xi lanh về vị trí lò xo (X về, Z nâng, kẹp mở) nên phôi đang kẹp sẽ rơi. Đây là lý do van kẹp thực tế hay dùng van 2 đầu điện có nhớ. I0.7 mất tín hiệu nên PLC xóa hết các bước: nhả dừng khẩn robot đứng yên, phải nhấn Start lại.'] });
   },
+  // ===== Vi điều khiển =====
+  () => { const t = mk('mcu'), u = t.add('mcu', 200, 300, { tag: 'U1', mm: 'uno', code: MCU_EX.uno[0][1] }), r = t.add('dtro', 230, 180, { tag: 'R1', ohm: '220' }), d = t.add('led5', 350, 150, { tag: 'D1', color: 'red' });
+    t.w(u, 'D13', r, '1', 'orange'); t.w(r, '2', d, 'A', 'orange'); t.w(d, 'K', u, 'GND', 'black');
+    return fin(t, { key: 'mcu-blink', name: 'Arduino: nháy LED (Blink)', cat: 'Vi điều khiển', lvl: 'Cơ bản', desc: 'Bài đầu tiên với vi điều khiển: chân 13 nối điện trở 220 Ω rồi tới chân dài (A+) của LED, chân ngắn (K−) về GND. Chương trình bật tắt chân 13 mỗi 0,5 giây.',
+      steps: ['Chạm U1 để xem chương trình: setup() chạy 1 lần, loop() lặp mãi.', 'Bấm ▶ Chạy: LED D1 và đèn L trên bo nháy.', 'Dừng, chạm U1 đổi delay(500) thành delay(100) rồi chạy lại.', 'Thử xóa điện trở R1, nối thẳng chân 13 vào LED rồi chạy: LED cháy vì không có điện trở hạn dòng.'] }); },
+  () => { const t = mk('mcu'), u = t.add('mcu', 200, 300, { tag: 'U1', mm: 'uno', code: MCU_EX.uno[1][1] }), r = t.add('dtro', 230, 180, { tag: 'R1' }), d = t.add('led5', 350, 150, { tag: 'D1', color: 'green' }), b = t.add('tact', 540, 150, { tag: 'S1' });
+    t.w(u, 'D13', r, '1', 'orange'); t.w(r, '2', d, 'A', 'orange'); t.w(d, 'K', u, 'GND', 'black'); t.w(u, 'D2', b, '3', 'yellow'); t.w(b, '4', u, 'GND', 'black');
+    return fin(t, { key: 'mcu-nut', name: 'Arduino: nút nhấn bật LED (INPUT_PULLUP)', cat: 'Vi điều khiển', lvl: 'Cơ bản', desc: 'Nút nhấn nối chân 2 xuống GND, dùng điện trở kéo lên có sẵn trong chip (INPUT_PULLUP): không nhấn đọc được HIGH, nhấn đọc được LOW.',
+      steps: ['Bấm ▶ Chạy, nhấn giữ nút S1: LED sáng.', 'Dừng, đổi INPUT_PULLUP thành INPUT rồi chạy: chân 2 bị thả nổi khi không nhấn, đọc không đúng. Đó là lý do phải có điện trở kéo lên hoặc kéo xuống.'] }); },
+  () => { const t = mk('mcu'), u = t.add('mcu', 200, 300, { tag: 'U1', mm: 'uno', code: MCU_EX.uno[2][1] });
+    [['D8', 'red'], ['D9', 'yellow'], ['D10', 'green']].forEach(([pn, c], i) => { const r = t.add('dtro', 300 + i * 0, 60 + i * 70, { tag: 'R' + (i + 1) }), d = t.add('led5', 420, 30 + i * 70, { tag: 'D' + (i + 1), color: c }); t.w(u, pn, r, '1', 'orange'); t.w(r, '2', d, 'A', 'orange'); t.w(d, 'K', u, 'GND', 'black'); });
+    return fin(t, { key: 'mcu-den', name: 'Arduino: đèn giao thông 3 màu', cat: 'Vi điều khiển', lvl: 'Cơ bản', desc: 'Ba LED đỏ, vàng, xanh ở chân 8, 9, 10, mỗi LED một điện trở. Chương trình dùng hàm tự viết den(d, v, x, thoiGian) để gọn code.',
+      steps: ['Bấm ▶ Chạy: xanh 3 s → vàng 1 s → đỏ 3 s.', 'Chạm U1, sửa thời gian trong loop() để đèn xanh dài hơn.'] }); },
+  () => { const t = mk('mcu'), u = t.add('mcu', 200, 300, { tag: 'U1', mm: 'uno', code: MCU_EX.uno[3][1] }), r = t.add('dtro', 330, 180, { tag: 'R1' }), d = t.add('led5', 450, 150, { tag: 'D1', color: 'blue' }), v = t.add('pot10k', 300, 600, { tag: 'RV1' });
+    t.w(u, 'D9', r, '1', 'orange'); t.w(r, '2', d, 'A', 'orange'); t.w(d, 'K', u, 'GND', 'black'); t.w(v, '1', u, 'GND2', 'black'); t.w(v, '3', u, '5V', 'red'); t.w(v, '2', u, 'A0', 'green');
+    return fin(t, { key: 'mcu-pwm', name: 'Arduino: biến trở chỉnh độ sáng LED (ADC + PWM)', cat: 'Vi điều khiển', lvl: 'Trung bình', desc: 'analogRead(A0) đọc biến trở 0–1023, map() đổi sang 0–255, analogWrite(9) xuất xung PWM làm LED sáng mờ dần. Giá trị in ra Serial Monitor.',
+      steps: ['Bấm ▶ Chạy, chạm RV1 và kéo thanh trượt: LED sáng mạnh, yếu theo núm.', 'Chạm U1 để xem Serial Monitor in giá trị A0 và PWM.', 'Thử đổi LED sang chân 8 (không có PWM): app báo lỗi vì chân 8 không xuất PWM được.'] }); },
+  () => { const t = mk('mcu'), u = t.add('mcu', 200, 300, { tag: 'U1', mm: 'uno', code: MCU_EX.uno[4][1] }), s = t.add('servo', 330, 120, { tag: 'M1' }), v = t.add('pot10k', 300, 600, { tag: 'RV1' });
+    t.w(s, 'GND', u, 'GND', 'black'); t.w(s, 'VCC', u, '5V', 'red'); t.w(s, 'SIG', u, 'D9', 'orange'); t.w(v, '1', u, 'GND2', 'black'); t.w(v, '3', u, '5V', 'red'); t.w(v, '2', u, 'A0', 'green');
+    return fin(t, { key: 'mcu-servo', name: 'Arduino: servo SG90 quay theo biến trở', cat: 'Vi điều khiển', lvl: 'Trung bình', desc: 'Thư viện Servo: myservo.attach(9) rồi myservo.write(góc 0–180). Góc lấy từ biến trở qua analogRead và map().',
+      steps: ['Bấm ▶ Chạy, kéo thanh trượt của RV1: cánh servo quay theo.'] }); },
+  () => { const t = mk('mcu'), u = t.add('mcu', 200, 300, { tag: 'U1', mm: 'uno', code: MCU_EX.uno[5][1] }), s = t.add('sr04', 300, 140, { tag: 'B1' }), l = t.add('lcd16', 300, 620, { tag: 'LCD1' });
+    t.w(s, 'VCC', u, '5V', 'red'); t.w(s, 'GND', u, 'GND', 'black'); t.w(s, 'TRIG', u, 'D9', 'yellow'); t.w(s, 'ECHO', u, 'D10', 'green');
+    t.w(l, 'VCC', u, '5V', 'red'); t.w(l, 'GND', u, 'GND2', 'black'); t.w(l, 'SDA', u, 'A4', 'blue'); t.w(l, 'SCL', u, 'A5', 'violet');
+    return fin(t, { key: 'mcu-sr04', name: 'Arduino: đo khoảng cách HC-SR04, hiện lên LCD I2C', cat: 'Vi điều khiển', lvl: 'Trung bình', desc: 'Phát xung 10 µs ở Trig, đo xung Echo bằng pulseIn rồi chia 58 ra cm, hiện lên LCD 16x2 qua I2C (SDA = A4, SCL = A5).',
+      steps: ['Bấm ▶ Chạy: LCD hiện khoảng cách.', 'Chạm B1 kéo thanh trượt khoảng cách: số trên LCD đổi theo.'] }); },
+  () => { const t = mk('mcu'), u = t.add('mcu', 200, 300, { tag: 'U1', mm: 'uno', code: MCU_EX.uno[6][1] }), dh = t.add('dht11', 520, 120, { tag: 'B1' }), rl = t.add('relay5', 300, 110, { tag: 'K1', trig: 'H' });
+    const src = t.add('nguon1', 40, 20), q = t.add('mcb1', 230, 20, { tag: 'Q1' }), lamp = t.add('bd', 60, 130, { tag: 'E1' });
+    t.w(dh, 'VCC', u, '5V', 'red'); t.w(dh, 'GND', u, 'GND', 'black'); t.w(dh, 'DATA', u, 'D2', 'yellow');
+    t.w(rl, 'VCC', u, '5V', 'red'); t.w(rl, 'GND', u, 'GND', 'black'); t.w(rl, 'IN', u, 'D7', 'orange');
+    t.w(src, 'L', q, '1', 'brown'); t.w(q, '2', rl, 'COM', 'brown'); t.w(rl, 'NO', lamp, 'L', 'brown'); t.w(lamp, 'N', src, 'N', 'blue');
+    return fin(t, { key: 'mcu-dht', name: 'Arduino: DHT11 điều khiển rơ le bật đèn/quạt 220V', cat: 'Vi điều khiển', lvl: 'Trung bình', desc: 'Đọc nhiệt độ DHT11, trên 30 °C thì bật rơ le K1 (COM–NO đóng điện 220 V cho tải), dưới 28 °C thì tắt. Mạch 5 V và mạch 220 V cách ly nhau qua rơ le.',
+      steps: ['Bấm ▶ Chạy, chạm U1 xem Serial Monitor in nhiệt độ, độ ẩm.', 'Chạm B1 kéo nhiệt độ lên 32 °C: rơ le hút, bóng E1 sáng.', 'Kéo xuống 26 °C: rơ le nhả.'] }); },
+  () => { const t = mk('mcu'), u = t.add('mcu', 200, 300, { tag: 'U1', mm: 'uno', code: MCU_EX.uno[7][1] }), sg = t.add('seg7', 450, 120, { tag: 'DS1', ct: 'CC' });
+    ['a', 'b', 'c', 'd', 'e', 'f', 'g'].forEach((s, i) => t.w(sg, s, u, 'D' + (2 + i), 'yellow')); t.w(sg, 'COM', u, 'GND', 'black');
+    return fin(t, { key: 'mcu-7seg', name: 'Arduino: LED 7 đoạn đếm 0–9', cat: 'Vi điều khiển', lvl: 'Trung bình', desc: 'Mảng so[10] lưu mã 7 đoạn của từng số (bit 0 = thanh a … bit 6 = thanh g). Hàm hienThi(n) xuất từng bit ra chân 2–8.',
+      steps: ['Bấm ▶ Chạy: LED đếm 0 → 9.', 'Đổi Loại của DS1 sang anốt chung, COM nối 5V và đảo bit trong chương trình (~so[n]) để thử loại CA.'] }); },
+  () => { const t = mk('mcu'), u = t.add('mcu', 200, 300, { tag: 'U1', mm: 'uno', code: MCU_EX.uno[8][1] }), dr = t.add('l298n', 330, 100, { tag: 'U2' }), m = t.add('mdc', 340, -40, { tag: 'M1' }), ps = t.add('ad12', 560, 120, { tag: 'G1' });
+    t.w(ps, '+', dr, '12V', 'red'); t.w(ps, '-', dr, 'GND', 'black'); t.w(dr, 'GND', u, 'GND', 'black'); t.w(dr, 'ENA', u, 'D9', 'yellow'); t.w(dr, 'IN1', u, 'D8', 'green'); t.w(dr, 'IN2', u, 'D7', 'blue');
+    t.w(dr, 'OUT1', m, '+', 'red'); t.w(dr, 'OUT2', m, '-', 'black');
+    return fin(t, { key: 'mcu-l298n', name: 'Arduino: điều khiển động cơ DC qua L298N', cat: 'Vi điều khiển', lvl: 'Trung bình', desc: 'Vi điều khiển chỉ gửi tín hiệu (ENA, IN1, IN2); dòng chạy động cơ lấy từ nguồn 12 V qua mạch cầu H L298N. Bắt buộc nối chung GND của nguồn 12 V với GND của Arduino.',
+      steps: ['Bấm ▶ Chạy: động cơ quay thuận nhanh, chậm lại, dừng, rồi quay ngược.', 'Thử xóa dây GND nối L298N với Arduino: mất mức tham chiếu chung, động cơ không chạy.'] }); },
+  () => { const t = mk('mcu'), u = t.add('mcu', 200, 300, { tag: 'U1', mm: 'c51', code: MCU_EX.c51[0][1] });
+    for (let i = 0; i < 8; i++) { const d = t.add('led5', 208 + i * 27 - 12, 130, { tag: 'D' + (i + 1), color: 'red' }), r = t.add('dtro', 150 + i * 0, -200 + i * 40, { tag: 'R' + (i + 1), ohm: '330' }); t.w(u, 'VCC', r, '1', 'red'); t.w(r, '2', d, 'A', 'orange'); t.w(d, 'K', u, 'P1_' + i, 'yellow'); }
+    return fin(t, { key: 'c51-led', name: '8051: LED đuổi cổng P1 (Keil C)', cat: 'Vi điều khiển', lvl: 'Cơ bản', desc: 'AT89S52 kéo dòng tốt khi chân ở mức 0, nên LED đấu kiểu tích cực mức thấp: +5V → điện trở 330 Ω → LED → chân P1.x. Ghi P1 = ~x để chỉ một chân xuống 0. Hàm delay_ms dùng vòng lặp rỗng.',
+      steps: ['Bấm ▶ Chạy: 8 LED sáng lần lượt.', 'Chạm U1, đổi x = x << 1 thành x = x >> 1 và giá trị đầu 0x80 để chạy ngược chiều.'] }); },
+  () => { const t = mk('mcu'), u = t.add('mcu', 200, 300, { tag: 'U1', mm: 'pic', code: MCU_EX.pic[0][1] }), r = t.add('dtro', 230, 180, { tag: 'R1' }), d = t.add('led5', 350, 150, { tag: 'D1', color: 'yellow' });
+    t.w(u, 'RB0', r, '1', 'orange'); t.w(r, '2', d, 'A', 'orange'); t.w(d, 'K', u, 'VSS', 'black');
+    return fin(t, { key: 'pic-blink', name: 'PIC16F877A: nháy LED RB0 (CCS C)', cat: 'Vi điều khiển', lvl: 'Cơ bản', desc: 'CCS C dùng output_high(PIN_B0) / output_low(PIN_B0) và delay_ms. Chương trình mẫu thứ hai viết theo MPLAB XC8 (TRISB, PORTBbits.RB0, __delay_ms).',
+      steps: ['Bấm ▶ Chạy: LED nháy.', 'Dừng, chạm U1, chọn mẫu "Nháy LED RB0 (MPLAB XC8)" rồi Nạp mẫu để so sánh 2 cách viết.'] }); },
+  () => { const t = mk('mcu'), u = t.add('mcu', 200, 300, { tag: 'U1', mm: 'stm32', code: MCU_EX.stm32[1][1] }), b = t.add('tact', 240, 120, { tag: 'S1' }), r = t.add('dtro', 380, 180, { tag: 'R1' }), d = t.add('led5', 500, 150, { tag: 'D1', color: 'green' });
+    t.w(u, 'PA0', b, '3', 'yellow'); t.w(b, '4', u, 'GND', 'black'); t.w(u, 'PB0', r, '1', 'orange'); t.w(r, '2', d, 'A', 'orange'); t.w(d, 'K', u, 'GND', 'black');
+    return fin(t, { key: 'stm32-btn', name: 'STM32 Blue Pill: nút PA0 bật LED PB0 (HAL)', cat: 'Vi điều khiển', lvl: 'Trung bình', desc: 'Cấu hình GPIO bằng GPIO_InitTypeDef và HAL_GPIO_Init (PA0 ngõ vào kéo lên), đọc bằng HAL_GPIO_ReadPin, ghi bằng HAL_GPIO_WritePin. Mức logic 3,3 V.',
+      steps: ['Bấm ▶ Chạy, nhấn giữ S1: LED D1 sáng.', 'Chạm U1, nạp mẫu "Nháy LED PC13" để nháy đèn trên bo (PC13 sáng khi mức 0).'] }); },
+  () => { const t = mk('mcu'), u = t.add('mcu', 200, 300, { tag: 'U1', mm: 'esp32', code: MCU_EX.esp32[1][1] }), b = t.add('tact', 300, 120, { tag: 'S1' }), rl = t.add('relay5', 470, 100, { tag: 'K1', trig: 'H' });
+    const src = t.add('nguon1', 40, 20), q = t.add('mcb1', 230, -20, { tag: 'Q1' }), lamp = t.add('bd', 40, 130, { tag: 'E1' });
+    t.w(u, 'IO4', b, '3', 'yellow'); t.w(b, '4', u, 'GND', 'black'); t.w(rl, 'VCC', u, 'VIN', 'red'); t.w(rl, 'GND', u, 'GND', 'black'); t.w(rl, 'IN', u, 'IO23', 'orange');
+    t.w(src, 'L', q, '1', 'brown'); t.w(q, '2', rl, 'COM', 'brown'); t.w(rl, 'NO', lamp, 'L', 'brown'); t.w(lamp, 'N', src, 'N', 'blue');
+    return fin(t, { key: 'esp32-relay', name: 'ESP32: nút nhấn bật tắt đèn 220V qua rơ le', cat: 'Vi điều khiển', lvl: 'Trung bình', desc: 'Mỗi lần nhấn nút (phát hiện cạnh xuống) đảo trạng thái rơ le. Rơ le cấp nguồn 5 V từ chân VIN; chân điều khiển 3,3 V của ESP32 vẫn kích được module kích mức cao.',
+      steps: ['Bấm ▶ Chạy, nhấn S1: đèn E1 bật; nhấn lần nữa: tắt.', 'Chạm U1 xem Serial Monitor in trạng thái.'] }); },
   () => { // Cảm biến PNP 24V
     const t = mk('ind');
     const src = t.add('nguon1', 40, 20), q = t.add('mcb1', 60, 150, { tag: 'Q1' }), g = t.add('psu', 40, 330, { tag: 'G1' });
@@ -3485,7 +4501,8 @@ const wsw = (w, big) => `<span class="wsw${big ? ' big' : ''}" style="--c:${w.c}
 const MODES = {
   ind: { n: 'Đấu dây công nghiệp', d: 'Tủ điện động lực & điều khiển: aptomat, contactor, rơ le nhiệt, timer, động cơ 3 pha.', ico: 'kt' },
   dom: { n: 'Điện dân dụng', d: 'Đi dây trong nhà: công tơ, RCBO, công tắc, ổ cắm, đèn, quạt.', ico: 'bd' },
-  sch: { n: 'Sơ đồ nguyên lý', d: 'Vẽ bằng ký hiệu IEC rồi bấm chạy thử ngay trên bản vẽ.', ico: 's_no' }
+  sch: { n: 'Sơ đồ nguyên lý', d: 'Vẽ bằng ký hiệu IEC rồi bấm chạy thử ngay trên bản vẽ.', ico: 's_no' },
+  mcu: { n: 'Vi điều khiển', d: 'Arduino, ESP32, 8051, PIC, STM32: viết chương trình C, nối LED, nút, cảm biến, LCD, servo, động cơ rồi chạy thử.', ico: 'mcu' }
 };
 const PAL = {
   ind: [['Nguồn', ['nguon3', 'nguon1', 'mayphat', 'psu', 'bienap']],
@@ -3499,6 +4516,9 @@ const PAL = {
     ['Công tắc', ['ct1', 'ct1x2', 'ct2', 'ct2x2', 'ct3', 'thetu', 'dimmer', 'henGio', 'nchuong']], ['Cảm biến', ['camung', 'canhsang', 'ccua', 'ckhoi', 'cgas', 'cmua', 'phao', 'nhiet', 'mucnuoc']], ['Ổ cắm', ['oc', 'oc2', 'occt', 'gfci']],
     ['Đèn', ['bd', 'dentuyp', 'downlight', 'denhq', 'chanluu', 'tacte', 'chanluudt']],
     ['Thiết bị', ['qt', 'quathut', 'maylanh', 'nonglanh', 'bom1', 'chuong']], ['Đo, phụ kiện', ['vonke', 'ampe', 'cd', 'cdn', 'thanhN', 'daunoi', 'daioc', 'chu']]],
+  mcu: [['Bo vi điều khiển', ['mcu:uno', 'mcu:esp32', 'mcu:c51', 'mcu:pic', 'mcu:stm32']], ['Nguồn', ['usb5', 'pin9', 'ad12', 'lm7805']], ['Linh kiện cơ bản', ['dtro', 'led5', 'ledrgb', 'tact', 'gat', 'pot10k', 'npn']],
+    ['Hiển thị, âm thanh', ['seg7', 'lcd16', 'buzz5']], ['Rơ le, động cơ', ['relay5', 'servo', 'mdc', 'l298n']], ['Cảm biến', ['sr04', 'dht11', 'ldr', 'irmod', 'pir', 'lm35']],
+    ['Điện 220 V', ['nguon1', 'mcb1', 'bd', 'den', 'qt']], ['Phụ kiện', ['cd', 'daunoi', 'chu']]],
   sch: [['Nguồn', ['rail']], ['Cuộn dây', ['s_coil', 's_tcoil', 's_tcoffd']], ['Tiếp điểm', ['s_no', 's_nc', 's_tno', 's_tnc', 's_tofno', 's_tofnc']],
     ['Nút, công tắc, cảm biến', ['s_pbno', 's_pbnc', 's_estop', 's_sel', 's_lim', 's_limnc', 's_float', 's_prox']], ['Bảo vệ', ['s_cb1', 's_cb3', 's_fuse', 's_olnc', 's_olno', 's_ol3']],
     ['Động lực, tải', ['s_main3', 's_m3', 's_m6', 's_m1', 's_lamp', 's_buzz', 's_heat', 's_valve', 's_vm']], ['Khác', ['chu']]]
@@ -3525,6 +4545,8 @@ function vOf(p) {
   if (p.type === 'plc') v.plc = st;
   if (p.type === 'bt') v.vfd = st;
   if (p.type === 'robot') v.rb = st;
+  if (p.type === 'mcu') v.mc = st;
+  v.st = st; if (sim) { v.br = sim.ledb ? sim.ledb[p.id] : undefined; v.ledb = sim.ledb || {}; }
   if (p.type === 'xilanh2') { if ((S[p.tag + '.A'] || {}).coil) p._x = 1; if ((S[p.tag + '.B'] || {}).coil) p._x = 0; v.ext = !!p._x; }
   if (sim) {
     v.lit = !!sim.loads[p.id]; v.motor = sim.motors[p.id]; v.ang = angles[p.id] || 0;
@@ -3695,7 +4717,8 @@ function staticSVG(pr, pad = 30, vf = () => ({})) {
   return `<svg viewBox="${b.x0 - pad} ${b.y0 - pad} ${b.x1 - b.x0 + 2 * pad} ${b.y1 - b.y0 + 2 * pad}" class="${pr.mode === 'sch' ? 'schv' : ''}" aria-hidden="true"><g>${renderWires(pr)}</g><g>${renderParts(pr, vf)}</g><g class="static">${renderTerms(pr)}</g></svg>`;
 }
 function partIcon(type, size = 52) {
-  const d = P[type], p = { id: 'i', type, x: 0, y: 0, tag: '', len: 200 };
+  const mm = type.startsWith('mcu:') ? type.slice(4) : null; if (mm) type = 'mcu';
+  const d = P[type], p = { id: 'i', type, x: 0, y: 0, tag: '', len: 200, mm };
   for (const pp of d.props) p[pp.k] = pp.d;
   const w = d.wOf ? 200 : d.w, h = d.h, m = 16;
   return `<svg viewBox="${-m} ${-m - 6} ${w + 2 * m} ${h + 2 * m + 6}" width="${size}" height="${size}" class="${d.cats.includes('sch') ? 'schv' : ''}" aria-hidden="true">${d.draw(p, { on: true, z: () => ({}) })}</svg>`;
@@ -3762,10 +4785,10 @@ function step() {
   for (const p of proj.parts) if (p.type === 'bt') { const st = S[p.tag]; if (!st) continue;
     if (st.fault) { const M = vfdM(p), f = vfdFlt(M, st.fault); sim.faults.push(`${p.tag}: biến tần báo lỗi ${M.flt[st.fault]} – ${f[0]}. ${f[1]}`); }
     if (st.out) { const un = sim.r.find(p.id + ':U'); for (const q of proj.parts) { const m = sim.motors[q.id]; if (m && m.run && [':U', ':U1', ':V', ':W'].some(t => sim.r.find(q.id + t) === un)) m.hz = st.f || 0; } } }
-  if (sel && sel.kind === 'part') { plcLive(); vfdLive(); }
+  if (sel && sel.kind === 'part') { plcLive(); vfdLive(); mcuLive(); }
   for (const p of proj.parts) {
     const m = sim.motors[p.id];
-    if (m && m.run) angles[p.id] = ((angles[p.id] || 0) + (m.dir || 1) * (m.mode === 'star' ? 260 : 620) * (m.hz !== undefined ? m.hz / 50 : 1) * dt) % 360;
+    if (m && m.run) angles[p.id] = ((angles[p.id] || 0) + (m.dir || 1) * (m.mode === 'star' ? 260 : 620) * (m.hz !== undefined ? m.hz / 50 : 1) * (m.sp ?? 1) * dt) % 360;
     else if (m && m.pl) angles[p.id] = (angles[p.id] || 0) + (Math.random() - 0.5) * 6;
     if (/^(qt|maylanh|quathut|bom1|dc1)$/.test(p.type) && sim.loads[p.id]) angles[p.id] = ((angles[p.id] || 0) + 540 * dt) % 360;
   }
@@ -3804,13 +4827,13 @@ function toolbar() {
   $('#guidebtn').hidden = !proj.tpl; $('#guidebtn').classList.toggle('on', !!proj.tpl && showGuide);
   const cw = wcol(wireColor); $('#wirecur').style.cssText = `--c:${cw.c};--s:${cw.s || cw.c};--s2:${cw.s2 || cw.s || cw.c}`;
   $('#wirebtn').disabled = running; $('#palbtn').disabled = running;
-  $('#badge').textContent = proj.mode === 'dom' ? 'Lưới 1 pha 220 V' : proj.mode === 'sch' ? 'Sơ đồ nguyên lý' : 'Lưới 3 pha 380/220 V';
+  $('#badge').textContent = proj.mode === 'dom' ? 'Lưới 1 pha 220 V' : proj.mode === 'sch' ? 'Sơ đồ nguyên lý' : proj.mode === 'mcu' ? 'Mạch điện tử 5 V / 3,3 V' : 'Lưới 3 pha 380/220 V';
 }
 function palette() {
   const groups = PAL[proj.mode], n = groups.reduce((s, [, ts]) => s + ts.length, 0);
   $('#psheet').innerHTML = `<div class="wbox" role="dialog" aria-label="Linh kiện"><div class="ph"><input id="palq" placeholder="Tìm trong ${n} linh kiện…" aria-label="Tìm linh kiện" autocomplete="off"><button class="x" data-act="pclose" aria-label="Đóng">✕</button></div>
   <div class="chips2">${groups.map(([g], i) => `<button data-pg="${i}"${i ? '' : ' class="on"'}>${esc(g)}</button>`).join('')}</div>
-  <div class="pbody" id="pbody">${groups.map(([g, ts], i) => `<section class="pg" id="pg${i}"><h4>${esc(g)}</h4><div class="pgrid">${ts.map(t => `<button class="pi pt2" data-add="${t}" data-s="${esc((P[t].name + ' ' + P[t].short).toLowerCase())}" title="${esc(P[t].name)}">${partIcon(t, 66)}<span>${esc(P[t].short)}</span></button>`).join('')}</div></section>`).join('')}</div></div>`;
+  <div class="pbody" id="pbody">${groups.map(([g, ts], i) => `<section class="pg" id="pg${i}"><h4>${esc(g)}</h4><div class="pgrid">${ts.map(t => { const mm = t.startsWith('mcu:') ? MCU_MODELS[t.slice(4)] : null, nm = mm ? mm.n : P[t].name, sh = mm ? mm.n.split(' (')[0].replace('Arduino Uno R3', 'Arduino Uno') : P[t].short; return `<button class="pi pt2" data-add="${t}" data-s="${esc((nm + ' ' + sh + ' vi điều khiển').toLowerCase())}" title="${esc(nm)}">${partIcon(t, 66)}<span>${esc(sh)}</span></button>`; }).join('')}</div></section>`).join('')}</div></div>`;
 }
 function status() {
   const el = $('#status'); if (!el) return;
@@ -3860,7 +4883,7 @@ function sheet() {
   if (running) {
     const st = S[p.tag] || {};
     const lines = [];
-    if (st.coil !== undefined && termsOf(p).some(t => t[0] === 'A1')) lines.push('Cuộn dây: ' + (st.coil ? 'CÓ ĐIỆN' : 'không có điện'));
+    if (st.coil !== undefined && p.type !== 'mcu' && termsOf(p).some(t => t[0] === 'A1')) lines.push('Cuộn dây: ' + (st.coil ? 'CÓ ĐIỆN' : 'không có điện'));
     if (/^(tm|tmoff|tmfl|tmyd|tmtwin|s_tcoil|s_tcoffd)$/.test(p.type)) lines.push('Timer: ' + (st.done ? 'đã hết thời gian' : st.coil ? 'đang đếm' : 'chờ'));
     if (sim && sim.motors[p.id]) lines.push(motorStatus(sim.motors[p.id]));
     if (d.ana) { const an = typeof d.ana === 'function' ? d.ana(p) : d.ana, manual = !an.manual || p[an.manual] === 'tay', val = st.val ?? (+p.val ?? an.min);
@@ -3868,6 +4891,7 @@ function sheet() {
         : `<div class="muted">Nhiệt độ đang theo lò mô phỏng: ${Math.round(S.__temp ?? 28)} °C. Đổi sang "Chỉnh tay" trong thuộc tính nếu muốn kéo thanh trượt.</div>`; }
     if (p.type === 'plc') h += `<div class="io" id="plcio"></div><div class="ladder" id="ladder"></div>`;
     if (p.type === 'bt') h += vfdPanel(p);
+    if (p.type === 'mcu') h += mcuPanel(p);
     if (p.type === 'robot') { const s = st.sens || {}; lines.push(`Đã gắp ${st.cnt || 0} phôi · cảm biến: ${['a0', 'a1', 'b0', 'b1', 'P'].filter(k => s[k]).join(', ') || 'không'} · ${st.act ? 'đã TẮT cấp phôi (chạm robot để bật lại)' : 'đang cấp phôi (chạm robot để tắt)'}`); if (st.warn) lines.push(st.warn); }
     if (p.type === 'tcon') lines.push(`PV ${st.pv == null ? '—' : Math.round(st.pv) + ' °C'} · SV ${+p.sv || 80} °C · ngõ ra ${st.out ? 'BẬT' : 'TẮT'}`);
     h += `<div class="muted">${lines.map(esc).join(' · ') || (d.ana ? '' : 'Chạm trực tiếp vào thiết bị trên bàn để thao tác.')}</div><div class="row wrap">`;
@@ -3879,6 +4903,7 @@ function sheet() {
     h += `<div class="form">`;
     if (!d.noTag) h += `<label>Tên / ký hiệu<input id="f-tag" value="${esc(p.tag || '')}" list="taglist" maxlength="8" autocomplete="off"></label><datalist id="taglist">${[...new Set(proj.parts.map(x => x.tag).filter(Boolean))].map(t => `<option value="${esc(t)}">`).join('')}</datalist>`;
     if (p.type === 'bt') h += vfdPanel(p);
+    if (p.type === 'mcu') h += mcuPanel(p);
     for (const pp of d.props) {
       if (pp.code) { const pr = plcProgOf(p), M = modelOf(p), lg = langOf(p);
         h += `<div class="plced"><div class="pm2"><label>Model PLC<select id="f-model">${Object.entries(PLC_MODELS).map(([k, m]) => `<option value="${k}"${k === (p.model || 'generic') ? ' selected' : ''}>${esc(m.n)}</option>`).join('')}</select></label>
@@ -3895,7 +4920,7 @@ function sheet() {
     h += `</div><div class="row wrap"><button class="btn" data-act="dup">Nhân bản</button><button class="btn" data-act="info">Cẩm nang</button>${p.burnt ? '<button class="btn" data-act="replace">Thay mới</button>' : ''}<button class="btn danger" data-act="del">Xoá</button></div><div class="info" hidden>${esc(d.info || '')}</div>`;
     if (proj.mode === 'sch' && /^s_(no|nc|tno|tnc|main3|olnc|olno|ol3)$/.test(p.type)) h += `<div class="muted">Đặt cùng tên với cuộn dây (ví dụ K1) để tiếp điểm tác động theo cuộn đó.</div>`;
   }
-  el.innerHTML = h; el.classList.toggle('wide', p.type === 'plc' || p.type === 'bt');
+  el.innerHTML = h; el.classList.toggle('wide', p.type === 'plc' || p.type === 'bt' || p.type === 'mcu');
   if (running) plcLive();
 }
 function plcSyntax(M, lg) {
@@ -4055,6 +5080,33 @@ function vfdKey(p, k) {
   }
   vfdRefresh(p, msg); draw();
 }
+/* ---------- bảng soạn chương trình vi điều khiển ---------- */
+function mcuCodeOf(p) { return p.code ?? MCU_EX[p.mm || 'uno'][0][1]; }
+function mcuPanel(p) {
+  const M = mcuM(p), ex = MCU_EX[p.mm || 'uno'], c = mcCompile(mcuCodeOf(p));
+  if (running) { const st = S[p.tag] || {};
+    return `<div class="mcup"><div class="iom">${esc(M.n)} · ${esc(M.lang)}</div><div class="mcupins" id="mcupins">${mcuPinsHTML(p)}</div>
+      <div id="mcuerr" class="perr">${esc(st.err || '')}</div><div class="mcuh"><b>Serial Monitor</b><span class="muted">${st.baud ? st.baud + ' baud' : ''}</span></div><pre class="mcuser" id="mcuser">${esc(st.ser || '')}</pre>
+      <details class="psyn"><summary>Chương trình đang chạy</summary><pre class="codepv">${esc(mcuCodeOf(p))}</pre></details></div>`; }
+  return `<div class="mcup"><div class="pm2"><label>Bo mạch<select id="f-mm">${Object.entries(MCU_MODELS).map(([k, m]) => `<option value="${k}"${k === (p.mm || 'uno') ? ' selected' : ''}>${esc(m.n)}</option>`).join('')}</select></label>
+    <label>Chương trình mẫu<select id="f-mex">${ex.map((x, i) => `<option value="${i}"${x[1] === mcuCodeOf(p) ? ' selected' : ''}>${esc(x[0])}</option>`).join('')}</select></label></div>
+    <div class="row wrap"><button class="btn sm" data-act="mex">Nạp mẫu</button><span class="muted">Ngôn ngữ: ${esc(M.lang)}</span></div>
+    <textarea id="f-code" class="mcucode" rows="16" spellcheck="false" autocapitalize="off" autocomplete="off">${esc(mcuCodeOf(p))}</textarea>
+    <div id="mcumsg" class="${c.err ? 'perr' : 'pok'}">${c.err ? esc(c.err) : '✓ Biên dịch được · ' + Object.keys(c.prog.fns).length + ' hàm'}</div>
+    <details class="psyn"><summary>Lệnh hỗ trợ cho ${esc(M.short)}</summary><div class="mcuhelp">${esc(MCU_HELP[M.dial])}</div></details></div>`;
+}
+const MCU_HELP = {
+  ard: 'pinMode(chân, OUTPUT / INPUT / INPUT_PULLUP), digitalWrite, digitalRead, analogRead (A0–A5 Uno; GPIO32–39, 25–27, 12–15, 2, 4 ESP32), analogWrite (PWM: 3, 5, 6, 9, 10, 11 trên Uno), delay, delayMicroseconds, millis, micros, map, constrain, random, tone, noTone, pulseIn, Serial.begin / print / println, Servo (attach, write, read), LiquidCrystal_I2C (init, backlight, clear, setCursor, print), DHT (begin, readTemperature, readHumidity). Cú pháp C: biến, mảng, if/else, for, while, do-while, switch, hàm tự viết, #define.',
+  c51: 'Thanh ghi cổng P1, P2, P3 (đọc/ghi cả byte), sbit TEN = P1^0; để đặt tên cho 1 chân, hoặc P1_0 kiểu SDCC. Chân 8051 có điện trở kéo lên yếu: ghi 1 để làm ngõ vào hoặc mức cao yếu, ghi 0 để kéo xuống mạnh (LED nên đấu tích cực mức thấp). Hàm trễ tự viết bằng vòng lặp rỗng, hoặc delay_ms(n), _nop_(). Trên bo trong app có P1.0–P1.7, P2.0–P2.7, P3.2–P3.5.',
+  pic: 'CCS C: output_high(PIN_B0), output_low, output_toggle, output_bit, input(PIN_A0), output_b(giá trị), input_b(), set_tris_b(...), port_b_pullups(TRUE), delay_ms, delay_us, setup_adc_ports, setup_adc, set_adc_channel(n), read_adc() (AN0–AN3 = RA0–RA3, AN4 = RA5). MPLAB XC8: TRISB = 0x00; PORTB = 0xFF; PORTBbits.RB0 = 1; RB0 = 1; __delay_ms(500).',
+  stm: 'STM32 HAL: HAL_GPIO_WritePin(GPIOx, GPIO_PIN_n, GPIO_PIN_SET / GPIO_PIN_RESET), HAL_GPIO_TogglePin, HAL_GPIO_ReadPin, HAL_Delay(ms), HAL_GetTick(), cấu hình chân bằng GPIO_InitTypeDef (.Pin, .Mode = GPIO_MODE_INPUT / GPIO_MODE_OUTPUT_PP, .Pull = GPIO_PULLUP / GPIO_PULLDOWN / GPIO_NOPULL) và HAL_GPIO_Init(GPIOx, &GPIO_InitStruct). HAL_Init, SystemClock_Config, MX_GPIO_Init được bỏ qua (coi như CubeMX đã cấu hình). Chân có trên bo: PA0–PA7, PB0, PB1, PB6–PB14, PC13 (LED trên bo, sáng khi mức 0).'
+};
+function mcuPinsHTML(p) { const st = S[p.tag] || {}, M = mcuM(p);
+  return [...M.top, ...M.bot].filter(t => !MCU_SUP[t]).map(t => { const q = (st.pin || {})[t] || {}, lv = st.io ? st.io.level(t) : 0, out = q.m === 'out' || (q.m === 'qb' && !q.v);
+    return `<span class="${lv ? 'on' : ''}${out ? ' o' : ''}" title="${out ? 'ngõ ra' : q.m === 'pu' ? 'ngõ vào kéo lên' : 'ngõ vào'}">${esc(M.lab(t))}</span>`; }).join(''); }
+function mcuLive() { const p = sel && sel.kind === 'part' && byId(sel.id); if (!p || p.type !== 'mcu' || !running) return; const st = S[p.tag] || {}, a = $('#mcuser'); if (!a) return;
+  const txt = st.ser || ''; if (a.textContent !== txt) { const end = a.scrollTop + a.clientHeight >= a.scrollHeight - 8; a.textContent = txt; if (end) a.scrollTop = a.scrollHeight; }
+  $('#mcupins').innerHTML = mcuPinsHTML(p); $('#mcuerr').textContent = st.err || ''; }
 function plcLive() {
   const p = sel && sel.kind === 'part' && byId(sel.id); if (!p || p.type !== 'plc' || !running) return;
   const st = S[p.tag] || {}, pr = plcProgOf(p), M = modelOf(p), io = $('#plcio'), ld = $('#ladder'); if (!io || !ld) return;
@@ -4159,7 +5211,7 @@ function bindEditor() {
     if (!running && tEl && !locked) { termTap(tEl.dataset.k); gest = null; return; }
     if (pEl) {
       const p = byId(pEl.dataset.pid);
-      if (running) { const wp = toWorld(e.clientX, e.clientY); interact(p, 'down', wp.x - p.x, wp.y - p.y); const info = p.burnt || P[p.type].leak || P[p.type].ana || /^(plc|tcon|dhdn|dhs|rcbo|rn|eocr|mpcb|tm|tmoff|tmfl|tmyd|tmtwin|bt|robot|rbvp|dc3|dc6|dc2t|dcrung|dcdc|bom3|quathut3|s_olnc|s_olno|s_ol3|s_tcoil|s_tcoffd|s_m3|s_m6)$/.test(p.type); sel = info ? { kind: 'part', id: p.id } : null; sheet(); step(); gest = null; return; }
+      if (running) { const wp = toWorld(e.clientX, e.clientY); interact(p, 'down', wp.x - p.x, wp.y - p.y); const info = p.burnt || P[p.type].leak || P[p.type].ana || /^(plc|tcon|dhdn|dhs|rcbo|rn|eocr|mpcb|tm|tmoff|tmfl|tmyd|tmtwin|bt|robot|mcu|relay5|servo|lcd16|npn|lm7805|l298n|rbvp|dc3|dc6|dc2t|dcrung|dcdc|bom3|quathut3|s_olnc|s_olno|s_ol3|s_tcoil|s_tcoffd|s_m3|s_m6)$/.test(p.type); sel = info ? { kind: 'part', id: p.id } : null; sheet(); step(); gest = null; return; }
       if (locked) { sel = { kind: 'part', id: p.id }; sheet(); draw(); gest = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: view.x, vy: view.y, moved: true }; return; }
       const w = toWorld(e.clientX, e.clientY);
       gest = { kind: 'drag', p, ox: w.x - p.x, oy: w.y - p.y, sx: e.clientX, sy: e.clientY, moved: false };
@@ -4206,7 +5258,7 @@ function bindEditor() {
     const cg = e.target.closest('[data-pg]');
     if (cg) { document.querySelectorAll('.chips2 button').forEach(x => x.classList.toggle('on', x === cg)); $('#pg' + cg.dataset.pg).scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
     const b = e.target.closest('[data-add]'); if (!b || running) return;
-    const type = b.dataset.add, d = P[type], r = $('#stage').getBoundingClientRect();
+    let type = b.dataset.add; const mm0 = type.startsWith('mcu:') ? type.slice(4) : null; if (mm0) type = 'mcu'; const d = P[type], r = $('#stage').getBoundingClientRect();
     const c = toWorld(r.left + (r.width - 70) / 2, r.top + r.height / 2.2);
     snap();
     const p = { id: 'p' + (proj.n++), type, x: Math.round((c.x - dw({ type, len: 400 }) / 2) / 10) * 10, y: Math.round((c.y - d.h / 2) / 10) * 10 };
@@ -4214,6 +5266,7 @@ function bindEditor() {
     if (type === 'plc') { p.model = 'generic'; p.lang = 'lad'; p.lad = JSON.parse(presetText(0, 'generic', 'lad')); }
     for (const pp of d.props) p[pp.k] = pp.d;
     if (type === 'rail') p.len = 400;
+    if (mm0) { p.mm = mm0; p.code = MCU_EX[mm0][0][1]; }
     while (proj.parts.some(q => q.x === p.x && q.y === p.y)) { p.x += 20; p.y += 20; }
     proj.parts.push(p); sel = { kind: 'part', id: p.id }; autosave(); draw(); sheet(); status(); toolbar();
     $('#psheet').hidden = true; toast('Đã thêm ' + P[type].short + (p.tag ? ' ' + p.tag : ''));
@@ -4236,12 +5289,14 @@ function bindEditor() {
     if (act === 'leak' && p) { const st = T(S, p.tag); st.on = false; st.tripped = true; p.on = false; log.unshift({ m: `${p.tag}: phát hiện dòng rò ≥ 30 mA → RCBO cắt điện. Gạt lên lại để đóng điện.`, t: now }); step(); sheet(); }
     if (act === 'oltrip' && p) { const st = T(S, p.tag); st.tripped = !st.tripped; step(); sheet(); }
     if (act === 'hideguide') { showGuide = false; guide(); }
+    if (act === 'mex' && p) { snap(); p.code = MCU_EX[p.mm || 'uno'][+$('#f-mex').value][1]; autosave(); sheet(); draw(); }
     if (act === 'vquick' && p) { snap(); const q = VQUICK[+$('#f-vq').value][1], M = vfdM(p); p.vp = Object.assign(p.vp || {}, { cmd: q.cmd, ref: q.ref === 'ms' ? (M.msRef ?? 0) : q.ref }); delete p.vp.m79; autosave(); sheet(); if (running) step(); else draw(); toast('Đã cài: ' + VQUICK[+$('#f-vq').value][0]); }
     if (act === 'vreset' && p) { snap(); vfdReset(p); autosave(); sheet(); if (running) step(); else draw(); toast('Đã khôi phục cài đặt gốc'); }
     if (act === 'preset' && p) { snap(); const t = presetText(+$('#f-preset').value, p.model || 'generic', langOf(p)); if (langOf(p) === 'lad') { p.lad = JSON.parse(t); ladSel = ''; } else p.prog = t; autosave(); sheet(); draw(); }
   });
   $('#sheet').addEventListener('input', e => {
     if (e.target.id === 'f-ana') { const p = byId(sel.id), an = typeof P[p.type].ana === 'function' ? P[p.type].ana(p) : P[p.type].ana; T(S, p.tag).val = +e.target.value; $('#anav').textContent = (+e.target.value).toFixed(an.step < 1 ? 1 : 0) + ' ' + an.unit; if (running) step(); return; }
+    if (e.target.id === 'f-code') { const p = byId(sel.id); p.code = e.target.value.slice(0, 20000); autosave(); const c = mcCompile(p.code), m = $('#mcumsg'); m.className = c.err ? 'perr' : 'pok'; m.textContent = c.err ? c.err : '✓ Biên dịch được · ' + Object.keys(c.prog.fns).length + ' hàm'; return; }
     if (e.target.id === 'f-prog') { const p = byId(sel.id); p.prog = e.target.value.slice(0, 6000); autosave(); const pr = plcProgOf(p); const m = $('#progmsg'); m.className = pr.err ? 'perr' : 'pok'; m.textContent = pr.err || '✓ Hợp lệ · ' + pr.stmts.length + ' lệnh xuất'; $('#ladder').innerHTML = pr.err ? '' : ladderSVG(pr, null, modelOf(p)); draw(); return; }
     if (e.target.id === 'f-name') { proj.name = e.target.value.slice(0, 60) || 'Dự án'; autosave(); return; }
     if (e.target.id === 'f-snd') { sndOn = e.target.checked; LS.set('xdd.snd', sndOn); return; }
@@ -4258,6 +5313,9 @@ function bindEditor() {
   });
   $('#sheet').addEventListener('change', e => {
     const p = sel && sel.kind === 'part' ? byId(sel.id) : null;
+    if (p && p.type === 'mcu') {
+      if (e.target.id === 'f-mm') { snap(); const old = p.mm || 'uno', cur = mcuCodeOf(p); p.mm = e.target.value; if (p.code === undefined || MCU_EX[old].some(x => x[1] === cur)) p.code = MCU_EX[p.mm][0][1]; autosave(); sheet(); draw(); return; }
+    }
     if (p && p.type === 'bt') {
       if (e.target.id === 'f-vm') { snap(); p.vm = e.target.value; kp.pid = null; autosave(); sheet(); draw(); return; }
       if (e.target.id === 'f-vkw') { snap(); p.kw = +e.target.value; autosave(); sheet(); draw(); return; }
@@ -4333,7 +5391,7 @@ function autoColor() { if (!autoOn()) return; const c = WSTD[wstdOf()].c; let r 
   for (const w of proj.wires) if (w.auto) { r = r || wireRoles(proj); const role = r[w.id]; if (role && c[role]) w.c = c[role]; } }
 function wireRoleLine(w) { if (!autoOn()) return ''; const role = wireRoles(proj)[w.id];
   return `<p class="muted">${w.auto ? (role ? `Màu tự động: <b>${esc(WROLE[role])}</b> theo ${esc(WSTD[wstdOf()].n)}.` : 'Màu tự động: chưa xác định được dây này thuộc mạch nào (ví dụ điểm chung sao), đang dùng màu chọn sẵn.') : 'Dây này đang dùng màu tự chọn, không đổi theo tiêu chuẩn.'}</p>`; }
-function wstdBox() { const k = wstdOf(), S0 = WSTD[k], roles = proj.mode === 'dom' ? ['L1', 'N', 'PE'] : Object.keys(WROLE);
+function wstdBox() { const k = wstdOf(), S0 = WSTD[k], roles = proj.mode === 'dom' ? ['L1', 'N', 'PE'] : proj.mode === 'mcu' ? ['vcc', 'gnd', 'L1', 'N', 'PE'] : Object.keys(WROLE).filter(r => r !== 'vcc' && r !== 'gnd');
   return `<div class="wstd"><label><b>Màu dây tự động theo tiêu chuẩn</b><select id="f-wstd">${Object.entries(WSTD).map(([id, v]) => `<option value="${id}"${id === k ? ' selected' : ''}>${esc(v.n)}</option>`).join('')}</select></label>
     <p class="muted">${esc(S0.d)}${k !== 'off' ? ' App tự nhận ra dây pha, trung tính, tiếp địa, mạch điều khiển, 24 V, tín hiệu, analog để tô màu.' : ''}</p>
     ${k !== 'off' ? `<div class="wleg">${roles.map(r => `<span>${wsw(wcol(S0.c[r]), 0)}<b>${esc(WROLE[r])}</b><i>${esc(wcol(S0.c[r]).n)}</i></span>`).join('')}</div><button class="btn primary" data-act="wrecolor">Tô lại toàn bộ dây theo chuẩn này</button>` : ''}</div>`; }
@@ -4380,10 +5438,10 @@ const fmtDate = t => t ? new Date(t).toLocaleString('vi-VN', { day: '2-digit', m
 const projRow = x => `<div class="prow"><button class="pthumb" data-open="${esc(x.id)}">${staticSVG(x, 20)}</button><div class="pinfo"><b>${esc(x.name)}</b><span>${esc(MODES[x.mode] ? MODES[x.mode].n : '')} · ${x.parts.length} thiết bị · ${x.wires.length} dây · ${fmtDate(x.updated)}</span></div><div class="pact"><button class="btn sm" data-open="${esc(x.id)}">Mở</button><button class="btn sm" data-export="${esc(x.id)}">Xuất</button><button class="btn sm danger" data-delp="${esc(x.id)}">Xoá</button></div></div>`;
 function pageTemplates() {
   return `<section class="band"><h1 class="pt">Bài mẫu</h1><p class="lead">Mỗi bài mở thành một bản sao của bạn để chỉnh sửa, kèm các bước thao tác. Mạch đã được kiểm tra chạy đúng.</p>
-  ${['Công nghiệp', 'Dân dụng', 'Sơ đồ nguyên lý'].map(c => `<h2>${c}</h2><div class="tgrid">${TPL.map((t, i) => t.cat === c ? `<article class="tbig"><button class="thumb" data-tpl="${i}" aria-label="Mở ${esc(t.name)}">${staticSVG(t, 30)}</button><div class="tb-b"><span class="tc-cat">${esc(t.lvl)}</span><h3>${esc(t.name)}</h3><p>${esc(t.desc)}</p><button class="btn primary sm" data-tpl="${i}">Mở bài</button></div></article>` : '').join('')}</div>`).join('')}</section>`;
+  ${['Công nghiệp', 'Dân dụng', 'Vi điều khiển', 'Sơ đồ nguyên lý'].map(c => `<h2>${c}</h2><div class="tgrid">${TPL.map((t, i) => t.cat === c ? `<article class="tbig"><button class="thumb" data-tpl="${i}" aria-label="Mở ${esc(t.name)}">${staticSVG(t, 30)}</button><div class="tb-b"><span class="tc-cat">${esc(t.lvl)}</span><h3>${esc(t.name)}</h3><p>${esc(t.desc)}</p><button class="btn primary sm" data-tpl="${i}">Mở bài</button></div></article>` : '').join('')}</div>`).join('')}</section>`;
 }
 function pageLibrary() {
-  const groups = [...PAL.ind, ...PAL.dom.map(([g, ts]) => ['Dân dụng · ' + g, ts])];
+  const groups = [...PAL.ind, ...PAL.dom.map(([g, ts]) => ['Dân dụng · ' + g, ts]), ...PAL.mcu.map(([g, ts]) => ['Vi điều khiển · ' + g, ts.map(t => t.startsWith('mcu:') ? 'mcu' : t)])];
   const seen = new Set();
   return `<section class="band"><h1 class="pt">Cẩm nang linh kiện</h1><p class="lead">Hình dạng thiết bị, chân đấu dây, nguyên lý làm việc và ký hiệu trên sơ đồ nguyên lý.</p><input class="search" id="q" placeholder="Tìm thiết bị: contactor, timer, công tơ…" aria-label="Tìm thiết bị">
   ${groups.map(([g, ts]) => { const list = ts.filter(t => !seen.has(t) && seen.add(t)); return list.length ? `<h2 class="lg">${g}</h2><div class="lib">${list.map(t => { const d = P[t]; const pr = { mode: d.cats[0], parts: [Object.assign({ id: 'z', type: t, x: 0, y: 0, tag: d.noTag ? '' : d.prefix + '1' }, Object.fromEntries(d.props.map(pp => [pp.k, pp.d])))], wires: [] };
