@@ -4830,7 +4830,11 @@ function toolbar() {
   $('#badge').textContent = proj.mode === 'dom' ? 'Lưới 1 pha 220 V' : proj.mode === 'sch' ? 'Sơ đồ nguyên lý' : proj.mode === 'mcu' ? 'Mạch điện tử 5 V / 3,3 V' : 'Lưới 3 pha 380/220 V';
 }
 function palette() {
-  const groups = PAL[proj.mode], n = groups.reduce((s, [, ts]) => s + ts.length, 0);
+  const MN = { ind: 'Công nghiệp', dom: 'Dân dụng', mcu: 'Vi điều khiển' }, seen = new Set(), groups = [];
+  const addG = (g, ts) => { const l = ts.filter(t => !seen.has(t) && seen.add(t)); if (l.length) groups.push([g, l]); };
+  PAL[proj.mode].forEach(([g, ts]) => addG(g, ts));
+  if (proj.mode !== 'sch') for (const m of ['ind', 'dom', 'mcu']) if (m !== proj.mode) PAL[m].forEach(([g, ts]) => addG(MN[m] + ' · ' + g, ts));
+  const n = groups.reduce((s, [, ts]) => s + ts.length, 0);
   $('#psheet').innerHTML = `<div class="wbox" role="dialog" aria-label="Linh kiện"><div class="ph"><input id="palq" placeholder="Tìm trong ${n} linh kiện…" aria-label="Tìm linh kiện" autocomplete="off"><button class="x" data-act="pclose" aria-label="Đóng">✕</button></div>
   <div class="chips2">${groups.map(([g], i) => `<button data-pg="${i}"${i ? '' : ' class="on"'}>${esc(g)}</button>`).join('')}</div>
   <div class="pbody" id="pbody">${groups.map(([g, ts], i) => `<section class="pg" id="pg${i}"><h4>${esc(g)}</h4><div class="pgrid">${ts.map(t => { const mm = t.startsWith('mcu:') ? MCU_MODELS[t.slice(4)] : null, nm = mm ? mm.n : P[t].name, sh = mm ? mm.n.split(' (')[0].replace('Arduino Uno R3', 'Arduino Uno') : P[t].short; return `<button class="pi pt2" data-add="${t}" data-s="${esc((nm + ' ' + sh + ' vi điều khiển').toLowerCase())}" title="${esc(nm)}">${partIcon(t, 66)}<span>${esc(sh)}</span></button>`; }).join('')}</div></section>`).join('')}</div></div>`;
