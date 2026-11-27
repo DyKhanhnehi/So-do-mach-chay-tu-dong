@@ -189,7 +189,12 @@ svg text{font-family:"Be Vietnam Pro",system-ui,sans-serif}
 .stripe{stroke-dasharray:6 6}.stripe2{stroke-dasharray:3 15;stroke-dashoffset:-3;stroke-width:4.6}
 .warnc{background:#fff7e0;color:#7a5200;border:1px solid #f0cf73;border-radius:10px;padding:8px 12px;font-size:14px;font-weight:600}
 
-.wire.sel .wcore{stroke-width:6;filter:drop-shadow(0 0 3px var(--live))}.wire{cursor:pointer}
+.wire.sel .wcore{stroke-width:6;filter:drop-shadow(0 0 3px var(--live))}.wire{cursor:pointer;transition:opacity .15s}
+.wire.dim{opacity:.16}.wire.hl .wcore{stroke-width:5.4}.wire.hl .wcase{stroke-width:8.5}
+@media (hover:hover){#lw:has(.wire:hover) .wire:not(:hover):not(.hl){opacity:.38}#lw .wire:hover .wcore{stroke-width:5.6}}
+.wnums rect{fill:#fff;stroke:#1f2937;stroke-width:1.2}.wnums text{font:700 11px ui-monospace,Menlo,Consolas,monospace;fill:#111;text-anchor:middle;pointer-events:none}.wnums{pointer-events:none}
+.wsty{border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin:6px 0 10px}.wsty p{margin:8px 0 0;font-size:13.5px}
+.seg2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}.seg2 button{font:inherit;font-weight:600;font-size:14px;min-height:44px;border-radius:10px;border:1.5px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}.seg2 button.on{border-color:var(--co);background:color-mix(in srgb,var(--co) 12%,transparent);color:var(--co)}
 .flow{stroke:var(--live);stroke-width:2.2;fill:none;stroke-dasharray:3 9;animation:fl .6s linear infinite;opacity:.95}@keyframes fl{to{stroke-dashoffset:-12}}
 .livew{stroke:var(--live);stroke-width:1.2;fill:none;opacity:.5}
 .trm .hit{fill:transparent;cursor:crosshair}.trm .dot{fill:#d7dce1;stroke:#5b636d;stroke-width:1.5}.trm.s .dot{fill:var(--bg);stroke:var(--ink)}
@@ -4533,7 +4538,7 @@ let fxs = [], charred = new Map(), actx = null, sndOn = LS.get('xdd.snd', true);
 let showLbl = LS.get('xdd.lbl', true), showGuide = true, needFit = false, redo = [], locked = false, clearArm = 0;
 const byId = id => proj.parts.find(p => p.id === id);
 const dw = p => { const d = P[p.type]; return d.wOf ? d.wOf(p) : d.w; };
-function tpos(key, pr = proj) { const i = key.indexOf(':'); const p = pr.parts.find(q => q.id === key.slice(0, i)); if (!p) return null; const t = termsOf(p).find(t => t[0] === key.slice(i + 1)); return t ? { x: p.x + t[1], y: p.y + t[2], s: t[3] } : null; }
+function tpos(key, pr = proj) { const i = key.indexOf(':'); const p = pr.parts.find(q => q.id === key.slice(0, i)); if (!p) return null; const t = termsOf(p).find(t => t[0] === key.slice(i + 1)); return t ? { x: p.x + t[1], y: p.y + t[2], s: t[3], pid: p.id } : null; }
 
 /* ---------- vẽ dự án ---------- */
 function vOf(p) {
@@ -4581,6 +4586,8 @@ function ampOf(p, term = '1') {
 const rnd = (seed, i) => { const x = Math.sin(seed * 999 + i * 77.7) * 43758.5453; return x - Math.floor(x); };
 function wireMid(w) {
   const a = tpos(w.a), b = tpos(w.b); if (!a || !b) return null;
+  const pl = wPts.get(w.id); if (pl && proj.mode !== 'sch') { let L = 0; for (let i = 1; i < pl.length; i++) L += Math.hypot(pl[i].x - pl[i - 1].x, pl[i].y - pl[i - 1].y); let h = L / 2;
+    for (let i = 1; i < pl.length; i++) { const sl = Math.hypot(pl[i].x - pl[i - 1].x, pl[i].y - pl[i - 1].y); if (h <= sl) { const t = sl ? h / sl : 0; return { x: pl[i - 1].x + (pl[i].x - pl[i - 1].x) * t, y: pl[i - 1].y + (pl[i].y - pl[i - 1].y) * t }; } h -= sl; } }
   if (proj.mode === 'sch') return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
   const dir = s => s === 't' ? [0, -1] : s === 'l' ? [-1, 0] : s === 'r' ? [1, 0] : [0, 1];
   const [ax, ay] = dir(a.s), [bx, by] = dir(b.s), L = Math.min(70, Math.max(22, Math.hypot(a.x - b.x, a.y - b.y) * 0.28));
@@ -4660,6 +4667,77 @@ function takeEvents(evs) {
   }
   fxs = fxs.filter(f => (now - f.t0) / 1000 < f.dur);
 }
+/* ---------- đi dây gọn: vuông góc, bo góc, tách làn ---------- */
+const wPts = new Map();
+const wStyle = () => LS.get('xdd.wstyle', 'ortho');
+const wNum = () => LS.get('xdd.wnum', false);
+/* chọn làn: tránh thân thiết bị, tránh đè dây khác, gần vị trí lý tưởng nhất */
+function wHitV(R, x, y0, y1, skip) { let n = 0; const lo = Math.min(y0, y1), hi = Math.max(y0, y1); for (const r of R) if (r.id !== skip && x > r.x0 && x < r.x1 && lo < r.y1 && hi > r.y0) n++; return n; }
+function wHitH(R, y, x0, x1, skip) { let n = 0; const lo = Math.min(x0, x1), hi = Math.max(x0, x1); for (const r of R) if (r.id !== skip && y > r.y0 && y < r.y1 && lo < r.x1 && hi > r.x0) n++; return n; }
+function wPick(ctx, kind, ideal, lo, hi, okFn, scoreFn) {
+  const list = ctx[kind], cands = [ideal]; for (let k = 1; k <= 34; k++) cands.push(ideal + k * 9, ideal - k * 9);
+  let best = null, bs = Infinity;
+  for (const c of cands) { if (okFn && !okFn(c)) continue;
+    const lane = list.filter(g => Math.abs(g.c - c) < 8 && g.lo < hi - 3 && g.hi > lo + 3).length;
+    const sc = (scoreFn ? scoreFn(c) : 0) * 1000 + lane * 60 + Math.abs(c - ideal); if (sc < bs) { bs = sc; best = c; } if (sc < 1) break; }
+  if (best === null) best = ideal; list.push({ c: best, lo, hi }); return best;
+}
+function wOrtho(a, b, ctx, k) {
+  const R = ctx.R, dir = s => s === 't' ? [0, -1] : s === 'l' ? [-1, 0] : s === 'r' ? [1, 0] : [0, 1];
+  const da = dir(a.s), db = dir(b.s), S = 12 + (k % 3) * 5, pa = a.pid, pb = b.pid;
+  const A = { x: a.x + da[0] * S, y: a.y + da[1] * S }, B = { x: b.x + db[0] * S, y: b.y + db[1] * S }, va = !da[0], vb = !db[0];
+  let pts;
+  if (va && vb) {
+    const okY = y => (da[1] > 0 ? y >= A.y : y <= A.y) && (db[1] > 0 ? y >= B.y : y <= B.y);
+    const dA = da[1] > 0, dB = db[1] > 0;
+    const ideal = dA && !dB ? (A.y + B.y) / 2 : !dA && dB ? (A.y + B.y) / 2 : dA ? Math.max(A.y, B.y) : Math.min(A.y, B.y);
+    const feasible = (dA && !dB && B.y >= A.y) || (!dA && dB && B.y <= A.y) || dA === dB;
+    if (feasible) { const lo = Math.min(a.x, b.x), hi = Math.max(a.x, b.x);
+      const zs = y => wHitH(R, y, a.x, b.x) + wHitV(R, a.x, a.y, y, pa) + wHitV(R, b.x, b.y, y, pb);
+      const my = wPick(ctx, 'h', ideal, lo, hi, okY, zs);
+      pts = [a, { x: a.x, y: my }, { x: b.x, y: my }, b];
+      const hz = zs(my);
+      if (hz > 0) { const ya = wPick(ctx, 'h', A.y, lo - 60, hi + 60, y => dA ? y >= A.y : y <= A.y, y => wHitV(R, a.x, a.y, y, pa)), yb = wPick(ctx, 'h', B.y, lo - 60, hi + 60, y => dB ? y >= B.y : y <= B.y, y => wHitV(R, b.x, b.y, y, pb));
+        const sc = x => wHitV(R, x, ya, yb) + wHitH(R, ya, a.x, x) + wHitH(R, yb, b.x, x);
+        const mx = wPick(ctx, 'v', (a.x + b.x) / 2, Math.min(ya, yb), Math.max(ya, yb), null, sc);
+        const hd = sc(mx) + wHitV(R, a.x, a.y, ya, pa) + wHitV(R, b.x, b.y, yb, pb);
+        if (hd < hz) pts = [a, { x: a.x, y: ya }, { x: mx, y: ya }, { x: mx, y: yb }, { x: b.x, y: yb }, b]; } }
+    else { const ya = wPick(ctx, 'h', A.y, Math.min(a.x, b.x) - 40, Math.max(a.x, b.x) + 40, y => dA ? y >= A.y : y <= A.y, y => wHitV(R, a.x, a.y, y, pa));
+      const yb = wPick(ctx, 'h', B.y, Math.min(a.x, b.x) - 40, Math.max(a.x, b.x) + 40, y => dB ? y >= B.y : y <= B.y, y => wHitV(R, b.x, b.y, y, pb));
+      const mx = wPick(ctx, 'v', (a.x + b.x) / 2 + (Math.abs(a.x - b.x) < 30 ? 60 : 0), Math.min(ya, yb), Math.max(ya, yb), null, x => wHitV(R, x, ya, yb) + wHitH(R, ya, a.x, x) + wHitH(R, yb, b.x, x));
+      pts = [a, { x: a.x, y: ya }, { x: mx, y: ya }, { x: mx, y: yb }, { x: b.x, y: yb }, b]; }
+  } else if (!va && !vb) {
+    const okX = x => (da[0] > 0 ? x >= A.x : x <= A.x) && (db[0] > 0 ? x >= B.x : x <= B.x);
+    const rA = da[0] > 0, rB = db[0] > 0, ideal = rA !== rB ? (A.x + B.x) / 2 : rA ? Math.max(A.x, B.x) : Math.min(A.x, B.x);
+    const feasible = (rA && !rB && B.x >= A.x) || (!rA && rB && B.x <= A.x) || rA === rB;
+    if (feasible) { const zs = x => wHitV(R, x, a.y, b.y) + wHitH(R, a.y, a.x, x, pa) + wHitH(R, b.y, b.x, x, pb); const mx = wPick(ctx, 'v', ideal, Math.min(a.y, b.y), Math.max(a.y, b.y), okX, zs); pts = [a, { x: mx, y: a.y }, { x: mx, y: b.y }, b];
+      const hz = zs(mx);
+      if (hz > 0) { const lo = Math.min(a.y, b.y), hi = Math.max(a.y, b.y), xa = wPick(ctx, 'v', A.x, lo - 60, hi + 60, x => rA ? x >= A.x : x <= A.x, x => wHitH(R, a.y, a.x, x, pa)), xb = wPick(ctx, 'v', B.x, lo - 60, hi + 60, x => rB ? x >= B.x : x <= B.x, x => wHitH(R, b.y, b.x, x, pb));
+        const sc = y => wHitH(R, y, xa, xb) + wHitV(R, xa, a.y, y) + wHitV(R, xb, b.y, y), my = wPick(ctx, 'h', (a.y + b.y) / 2, Math.min(xa, xb), Math.max(xa, xb), null, sc);
+        if (sc(my) + wHitH(R, a.y, a.x, xa, pa) + wHitH(R, b.y, b.x, xb, pb) < hz) pts = [a, { x: xa, y: a.y }, { x: xa, y: my }, { x: xb, y: my }, { x: xb, y: b.y }, b]; } }
+    else { const my = wPick(ctx, 'h', (a.y + b.y) / 2 + (Math.abs(a.y - b.y) < 30 ? 60 : 0), Math.min(A.x, B.x), Math.max(A.x, B.x), null, y => wHitH(R, y, A.x, B.x) + wHitV(R, A.x, a.y, y, pa) + wHitV(R, B.x, b.y, y, pb)); pts = [a, A, { x: A.x, y: my }, { x: B.x, y: my }, B, b]; }
+  } else {
+    const [P, Q, dP, dQ, pP, pQ, rev] = va ? [a, b, da, db, pa, pb, false] : [b, a, db, da, pb, pa, true]; // P: cực dọc, Q: cực ngang
+    const Pp = { x: P.x, y: P.y + dP[1] * S }, Qp = { x: Q.x + dQ[0] * S, y: Q.y };
+    const direct = (dP[1] > 0 ? Q.y >= Pp.y : Q.y <= Pp.y) && (dQ[0] > 0 ? P.x >= Qp.x : P.x <= Qp.x) && !wHitV(R, P.x, P.y, Q.y, pP) && !wHitH(R, Q.y, P.x, Q.x, pQ);
+    if (direct) pts = [P, { x: P.x, y: Q.y }, Q];
+    else { const y = wPick(ctx, 'h', Pp.y, Math.min(P.x, Qp.x), Math.max(P.x, Qp.x), yy => dP[1] > 0 ? yy >= Pp.y : yy <= Pp.y, yy => wHitV(R, P.x, P.y, yy, pP) + wHitH(R, yy, P.x, Qp.x));
+      const x = wPick(ctx, 'v', Qp.x, Math.min(y, Q.y), Math.max(y, Q.y), xx => dQ[0] > 0 ? xx >= Qp.x : xx <= Qp.x, xx => wHitV(R, xx, y, Q.y) + wHitH(R, Q.y, Q.x, xx, pQ) + wHitH(R, y, P.x, xx));
+      pts = [P, { x: P.x, y }, { x, y }, { x, y: Q.y }, Q]; }
+    if (rev) pts.reverse();
+  }
+  const out = []; for (const p of pts) { const q = out[out.length - 1]; if (q && Math.abs(q.x - p.x) < 0.5 && Math.abs(q.y - p.y) < 0.5) continue; out.push({ x: p.x, y: p.y }); }
+  for (let i = out.length - 2; i > 0; i--) { const p = out[i - 1], q = out[i], r = out[i + 1]; if ((Math.abs(p.x - q.x) < 0.5 && Math.abs(q.x - r.x) < 0.5) || (Math.abs(p.y - q.y) < 0.5 && Math.abs(q.y - r.y) < 0.5)) out.splice(i, 1); }
+  return out;
+}
+const wCache = { key: '', d: {}, pts: {} };
+function wRound(pts, r = 8) {
+  let d = `M${pts[0].x} ${pts[0].y}`;
+  for (let i = 1; i < pts.length - 1; i++) { const p = pts[i - 1], q = pts[i], n = pts[i + 1], l1 = Math.hypot(q.x - p.x, q.y - p.y), l2 = Math.hypot(n.x - q.x, n.y - q.y), rr = Math.min(r, l1 / 2, l2 / 2);
+    const p1 = { x: q.x - (q.x - p.x) / (l1 || 1) * rr, y: q.y - (q.y - p.y) / (l1 || 1) * rr }, p2 = { x: q.x + (n.x - q.x) / (l2 || 1) * rr, y: q.y + (n.y - q.y) / (l2 || 1) * rr };
+    d += `L${p1.x} ${p1.y}Q${q.x} ${q.y} ${p2.x} ${p2.y}`; }
+  const z = pts[pts.length - 1]; return d + `L${z.x} ${z.y}`;
+}
 function wirePath(a, b, sch) {
   if (sch) {
     if (Math.abs(a.x - b.x) < 1 || Math.abs(a.y - b.y) < 1) return `M${a.x} ${a.y}L${b.x} ${b.y}`;
@@ -4673,20 +4751,42 @@ function wirePath(a, b, sch) {
   const [ax, ay] = dir(a.s), [bx, by] = dir(b.s), L = Math.min(70, Math.max(22, Math.hypot(a.x - b.x, a.y - b.y) * 0.28));
   return `M${a.x} ${a.y}C${a.x + ax * L} ${a.y + ay * L} ${b.x + bx * L} ${b.y + by * L} ${b.x} ${b.y}`;
 }
+function wireNets(pr) { const par = {}, f = k => { while (par[k] && par[k] !== k) k = par[k] = par[par[k]] || par[k]; return k; };
+  for (const w of pr.wires) { par[w.a] = par[w.a] || w.a; par[w.b] = par[w.b] || w.b; const x = f(w.a), y = f(w.b); if (x !== y) par[x] = y; }
+  const num = {}, out = {}; let n = 0; for (const w of pr.wires) { const r = f(w.a); if (!num[r]) num[r] = ++n; out[w.id] = num[r]; } return out; }
 function renderWires(pr, opt = {}) {
-  const sch = pr.mode === 'sch';
-  return pr.wires.map(w => {
-    const a = tpos(w.a, pr), b = tpos(w.b, pr); if (!a || !b) return '';
-    const d = wirePath(a, b, sch), W = wcol(w.c), c = W.c, isSel = opt.sel && opt.sel.kind === 'wire' && opt.sel.id === w.id;
-    let s = `<g class="wire${isSel ? ' sel' : ''}" data-wid="${w.id}"><path d="${d}" class="whit"/>`;
+  const sch = pr.mode === 'sch', ortho = !sch && wStyle() === 'ortho', labels = [];
+  let route = null;
+  if (ortho) { const key = pr.parts.map(p => p.id + p.type + (p.mm || '') + (p.vm || '') + p.x + ',' + p.y).join('|') + '#' + pr.wires.map(w => w.id + w.a + w.b).join('|');
+    if (pr === proj && wCache.key === key) route = wCache;
+    else { const R = pr.parts.map(p => ({ id: p.id, x0: p.x + 1, y0: p.y + 1, x1: p.x + dw(p) - 1, y1: p.y + P[p.type].h - 1 })), ctx = { h: [], v: [], R }, d = {}, pts = {};
+      const ord = pr.wires.map((w, i) => i).sort((i, j) => { const f = w => { const x = tpos(w.a, pr), y = tpos(w.b, pr); return x && y ? Math.abs(x.x - y.x) + Math.abs(x.y - y.y) : 0; }; return f(pr.wires[i]) - f(pr.wires[j]); });
+      for (const i of ord) { const w = pr.wires[i], a = tpos(w.a, pr), b = tpos(w.b, pr); if (!a || !b) continue; const pl = wOrtho(a, b, ctx, i); pts[w.id] = pl; d[w.id] = wRound(pl); }
+      route = { key, d, pts }; if (pr === proj) Object.assign(wCache, route); } }
+  const nets = (opt.focus || (opt.num ?? wNum())) && !sch ? wireNets(pr) : null;
+  let foc = null;
+  if (opt.focus && nets) { if (opt.focus.kind === 'wire') { const n = nets[opt.focus.id]; foc = new Set(pr.wires.filter(w => nets[w.id] === n).map(w => w.id)); }
+    else if (opt.focus.kind === 'part') { const pre = opt.focus.id + ':'; foc = new Set(pr.wires.filter(w => w.a.startsWith(pre) || w.b.startsWith(pre)).map(w => w.id)); if (!foc.size) foc = null; } }
+  if (pr === proj) wPts.clear();
+  const html = [];
+  for (const w of pr.wires) {
+    const a = tpos(w.a, pr), b = tpos(w.b, pr); if (!a || !b) continue;
+    let d;
+    if (ortho && route.d[w.id]) { const pts = route.pts[w.id]; d = route.d[w.id]; if (pr === proj) wPts.set(w.id, pts);
+      if (nets && (opt.num ?? wNum())) { const lab = (p, q) => { const L = Math.hypot(q.x - p.x, q.y - p.y) || 1, t = Math.min(30, L * 0.45); return { x: p.x + (q.x - p.x) / L * t, y: p.y + (q.y - p.y) / L * t }; };
+        labels.push([lab(pts[0], pts[1]), nets[w.id]], [lab(pts[pts.length - 1], pts[pts.length - 2]), nets[w.id]]); } }
+    else d = wirePath(a, b, sch);
+    const W = wcol(w.c), c = W.c, isSel = opt.sel && opt.sel.kind === 'wire' && opt.sel.id === w.id, cls = foc ? (foc.has(w.id) ? ' hl' : ' dim') : '';
+    let s = `<g class="wire${isSel ? ' sel' : ''}${cls}" data-wid="${w.id}"><path d="${d}" class="whit"/>`;
     if (!sch) s += `<path d="${d}" class="wcase"/>`;
     s += `<path d="${d}" class="wcore${sch ? ' thin' : ''}" stroke="${c}"/>`;
     if (W.s && !sch) s += `<path d="${d}" class="wcore stripe" stroke="${W.s}"/>`;
     if (W.s2 && !sch) s += `<path d="${d}" class="wcore stripe2" stroke="${W.s2}"/>`;
     if (opt.char && opt.char.has(w.id)) { const age = (now - opt.char.get(w.id)) / 1000; s += age < 1.6 ? `<path d="${d}" class="hotw" opacity="${(1 - age / 1.6).toFixed(2)}"/>` : ''; s += `<path d="${d}" class="charw" opacity="${Math.min(0.9, age / 1.6).toFixed(2)}"/>`; }
     if (opt.sim) { const n = opt.sim.r.find(w.a); if (opt.sim.active.has(n)) s += `<path d="${d}" class="flow"/>`; else if (opt.sim.live.has(n)) s += `<path d="${d}" class="livew"/>`; }
-    return s + '</g>';
-  }).join('');
+    html.push(s + '</g>');
+  }
+  return html.join('') + (labels.length ? `<g class="wnums">${labels.map(([p, n]) => { const t = String(n), w = 8 + t.length * 7; return `<rect x="${p.x - w / 2}" y="${p.y - 8}" width="${w}" height="16" rx="4"/><text x="${p.x}" y="${p.y + 4}">${t}</text>`; }).join('')}</g>` : '');
 }
 function renderParts(pr, vf, opt = {}) {
   return pr.parts.map(p => {
@@ -4714,7 +4814,7 @@ function bbox(pr) {
 }
 function staticSVG(pr, pad = 30, vf = () => ({})) {
   const b = bbox(pr);
-  return `<svg viewBox="${b.x0 - pad} ${b.y0 - pad} ${b.x1 - b.x0 + 2 * pad} ${b.y1 - b.y0 + 2 * pad}" class="${pr.mode === 'sch' ? 'schv' : ''}" aria-hidden="true"><g>${renderWires(pr)}</g><g>${renderParts(pr, vf)}</g><g class="static">${renderTerms(pr)}</g></svg>`;
+  return `<svg viewBox="${b.x0 - pad} ${b.y0 - pad} ${b.x1 - b.x0 + 2 * pad} ${b.y1 - b.y0 + 2 * pad}" class="${pr.mode === 'sch' ? 'schv' : ''}" aria-hidden="true"><g>${renderWires(pr, { num: false })}</g><g>${renderParts(pr, vf)}</g><g class="static">${renderTerms(pr)}</g></svg>`;
 }
 function partIcon(type, size = 52) {
   const mm = type.startsWith('mcu:') ? type.slice(4) : null; if (mm) type = 'mcu';
@@ -4813,7 +4913,7 @@ const cv = () => $('#cv');
 function draw() {
   if (!proj || !$('#world')) return;
   $('#world').setAttribute('transform', `translate(${view.x} ${view.y}) scale(${view.k})`);
-  $('#lw').innerHTML = renderWires(proj, { sel, sim: running ? sim : null, char: running ? charred : null });
+  $('#lw').innerHTML = renderWires(proj, { sel, focus: sel, sim: running ? sim : null, char: running ? charred : null });
   $('#lp').innerHTML = renderParts(proj, vOf, { sel });
   $('#lt').innerHTML = renderTerms(proj, { pending, probes, labels: false, nolab: !showLbl });
   $('#lf').innerHTML = fxSVG();
@@ -5349,6 +5449,7 @@ function bindEditor() {
     if (e.target.closest('[data-act=wclose]') || e.target === $('#wsheet')) { $('#wsheet').hidden = true; return; }
     const b = e.target.closest('[data-wid2]');
     if (b) { wireColor = b.dataset.wid2; if (sel && sel.kind === 'wire') { snap(); const ww = proj.wires.find(w => w.id === sel.id); ww.c = wireColor; ww.auto = false; autosave(); draw(); sheet(); } $('#wsheet').hidden = true; toolbar(); return; }
+    const sty = e.target.closest('[data-wsty]'); if (sty) { LS.set('xdd.wstyle', sty.dataset.wsty); draw(); wireSheet(); return; }
     if (e.target.closest('[data-act=wrecolor]')) { snap(); let n = 0; for (const w of proj.wires) { w.auto = true; } const before = proj.wires.map(w => w.c).join(); autoColor(); n = proj.wires.filter((w, i) => w.c !== before.split(',')[i]).length; autosave(); draw(); toolbar(); wireSheet(); toast(n ? `Đã đổi màu ${n} dây theo ${WSTD[wstdOf()].n}` : 'Màu dây đã đúng tiêu chuẩn'); return; }
     const del = e.target.closest('[data-wdel]');
     if (del) { LS.set('xdd.wires', WCUSTOM().filter(x => x.id !== del.dataset.wdel)); wireSheet(); return; }
@@ -5358,7 +5459,7 @@ function bindEditor() {
       LS.set('xdd.wires', [...WCUSTOM().filter(x => x.id !== c), { id: c, n, c, u: u || 'Màu dây tự thêm.' }].slice(-24)); wireColor = c; wireSheet(); toolbar();
     }
   });
-  $('#wsheet').addEventListener('change', e => { if (e.target.id === 'f-wstd') { snap(); proj.wstd = e.target.value; autosave(); draw(); toolbar(); wireSheet(); } });
+  $('#wsheet').addEventListener('change', e => { if (e.target.id === 'f-wnum') { LS.set('xdd.wnum', e.target.checked); draw(); return; } if (e.target.id === 'f-wstd') { snap(); proj.wstd = e.target.value; autosave(); draw(); toolbar(); wireSheet(); } });
   $('#runbtn').onclick = () => running ? stopRun() : startRun();
   $('#meterbtn').onclick = () => { tool = tool === 'meter' ? 'select' : 'meter'; probes = []; meterOut = ''; pending = null; toolbar(); draw(); status(); };
   $('#undobtn').onclick = undo; $('#redobtn').onclick = redoF;
@@ -5395,6 +5496,10 @@ function autoColor() { if (!autoOn()) return; const c = WSTD[wstdOf()].c; let r 
   for (const w of proj.wires) if (w.auto) { r = r || wireRoles(proj); const role = r[w.id]; if (role && c[role]) w.c = c[role]; } }
 function wireRoleLine(w) { if (!autoOn()) return ''; const role = wireRoles(proj)[w.id];
   return `<p class="muted">${w.auto ? (role ? `Màu tự động: <b>${esc(WROLE[role])}</b> theo ${esc(WSTD[wstdOf()].n)}.` : 'Màu tự động: chưa xác định được dây này thuộc mạch nào (ví dụ điểm chung sao), đang dùng màu chọn sẵn.') : 'Dây này đang dùng màu tự chọn, không đổi theo tiêu chuẩn.'}</p>`; }
+function wstyleBox() { const st = wStyle();
+  return `<div class="wsty"><b>Cách đi dây trên bàn</b><div class="seg2"><button data-wsty="ortho" class="${st === 'ortho' ? 'on' : ''}">┗━┓ Vuông góc gọn</button><button data-wsty="curve" class="${st === 'curve' ? 'on' : ''}">∿ Cong mềm</button></div>
+    <label class="chk"><input type="checkbox" id="f-wnum"${wNum() ? ' checked' : ''}> Đánh số dây: dây cùng điểm điện cùng số, giống số đầu cos trong tủ</label>
+    <p class="muted">Chạm vào một dây hoặc một thiết bị: các dây nối với nó được làm nổi, dây khác mờ đi để dễ dò mạch.</p></div>`; }
 function wstdBox() { const k = wstdOf(), S0 = WSTD[k], roles = proj.mode === 'dom' ? ['L1', 'N', 'PE'] : proj.mode === 'mcu' ? ['vcc', 'gnd', 'L1', 'N', 'PE'] : Object.keys(WROLE).filter(r => r !== 'vcc' && r !== 'gnd');
   return `<div class="wstd"><label><b>Màu dây tự động theo tiêu chuẩn</b><select id="f-wstd">${Object.entries(WSTD).map(([id, v]) => `<option value="${id}"${id === k ? ' selected' : ''}>${esc(v.n)}</option>`).join('')}</select></label>
     <p class="muted">${esc(S0.d)}${k !== 'off' ? ' App tự nhận ra dây pha, trung tính, tiếp địa, mạch điều khiển, 24 V, tín hiệu, analog để tô màu.' : ''}</p>
@@ -5402,7 +5507,7 @@ function wstdBox() { const k = wstdOf(), S0 = WSTD[k], roles = proj.mode === 'do
 function wireSheet() {
   const el = $('#wsheet'); el.hidden = false;
   el.innerHTML = `<div class="wbox" role="dialog" aria-label="Chọn dây dẫn"><div class="sh-h"><b>Chọn dây dẫn</b><button class="x" data-act="wclose" aria-label="Đóng">✕</button></div>
-  ${proj.mode !== 'sch' ? wstdBox() : ''}<p class="muted">${autoOn() ? 'Màu chọn bên dưới dùng cho dây chưa xác định được loại; chọn màu cho dây đang chọn thì dây đó giữ màu tự chọn.' : 'Màu dây theo tiêu chuẩn IEC 60445 cho dây động lực và IEC 60204-1 cho mạch điều khiển máy.'}</p>` +
+  ${proj.mode !== 'sch' ? wstyleBox() + wstdBox() : ''}<p class="muted">${autoOn() ? 'Màu chọn bên dưới dùng cho dây chưa xác định được loại; chọn màu cho dây đang chọn thì dây đó giữ màu tự chọn.' : 'Màu dây theo tiêu chuẩn IEC 60445 cho dây động lực và IEC 60204-1 cho mạch điều khiển máy.'}</p>` +
     allWires().map(([g, ls]) => `<h4>${esc(g)}</h4><div class="wlist">${ls.map(w => `<div class="witem${w.id === wireColor ? ' on' : ''}"><button data-wid2="${esc(w.id)}">${wsw(w, 1)}<span><b>${esc(w.n)}</b><small>${esc(w.u)}</small></span></button>${g === 'Màu tự thêm' ? `<button class="x" data-wdel="${esc(w.id)}" aria-label="Xoá màu ${esc(w.n)}">✕</button>` : ''}</div>`).join('')}</div>`).join('') +
     `<h4>Tùy chỉnh màu dây</h4><div class="wcustom"><input type="color" id="wcc" value="#16a39a" aria-label="Màu"><input id="wcn" placeholder="Tên, ví dụ: Xanh ngọc" maxlength="40"><input id="wcu" placeholder="Công dụng, ví dụ: tín hiệu analog 4–20 mA" maxlength="120"><button class="btn primary" id="wadd">Thêm màu</button></div></div>`;
 }
